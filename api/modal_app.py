@@ -25,7 +25,7 @@ image = (
     .pip_install_from_requirements(str(Path(__file__).with_name("requirements.txt")))
     .run_function(fetch_face_model)  # bake the buffalo_l weights into the image
     .env({"DB_PATH": "/data/six_eyes.db"})
-    .add_local_python_source("main", "x", "signals", "analyze")
+    .add_local_python_source("main", "x", "signals", "analyze", "face")
     .add_local_file(Path(__file__).with_name("data") / "keywords.json", "/root/data/keywords.json")
 )
 

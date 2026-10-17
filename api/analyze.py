@@ -9,6 +9,8 @@ import sys
 
 from pydantic import BaseModel
 
+import face
+
 
 class AnalyzeResult(BaseModel):
     face_sim: float            # cosine vs. the user's enrolled ArcFace embedding
@@ -22,10 +24,11 @@ class AnalyzeResult(BaseModel):
 
 
 def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
-    # ponytail: fixed placeholder so B can build against the shape; A6 swaps in the real pipeline.
+    face_sim, frame_drift = face.match(media_url, user_embedding)
+    # ponytail: face match is real; the detector fields are fixed placeholders until A6 lands.
     return AnalyzeResult(
-        face_sim=0.82, frame_drift=None, fake_prob=0.91, generator_guess="swap",
-        recon_score=0.031, c2pa=None, nsfw=0.05, pdq="0" * 64,
+        face_sim=round(face_sim, 4), frame_drift=frame_drift and round(frame_drift, 6),
+        fake_prob=0.91, generator_guess="swap", recon_score=0.031, c2pa=None, nsfw=0.05, pdq="0" * 64,
     )
 
 
