@@ -1,2 +1,2 @@
-# overwatch-
-legal agent that automates the process of taking down deep fakes
+# six eyes
+legal agent that automates the process of identifying and taking down deep fakes

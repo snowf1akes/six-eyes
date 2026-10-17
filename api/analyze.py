@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 import face
 
+PDQ_MIN_QUALITY = 50  # PDQ's own cutoff: below it (flat or blank images) hashes match too easily
+
 
 class AnalyzeResult(BaseModel):
     face_sim: float            # cosine vs. the user's enrolled ArcFace embedding
@@ -38,9 +40,11 @@ def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
 
 
 def pdq(img: np.ndarray) -> str:
-    """64-hex PDQ hash of a BGR image; for a video, analyze() hashes the middle sampled frame."""
-    bits, _quality = pdqhash.compute(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    return np.packbits(bits.astype(np.uint8)).tobytes().hex()
+    """64-hex PDQ hash of a BGR image, or "" when it's too flat to hash reliably (it then joins no
+    clone cluster). For a video, analyze() hashes the middle sampled frame."""
+    bits, quality = pdqhash.compute(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    # ponytail: our own bit order; convert to ThreatExchange's hex layout before sharing hashes outside Six Eyes.
+    return np.packbits(bits.astype(np.uint8)).tobytes().hex() if quality >= PDQ_MIN_QUALITY else ""
 
 
 if __name__ == "__main__":

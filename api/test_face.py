@@ -1,4 +1,4 @@
-"""Self-check for face matching in analyze(). Run from the repo root:
+"""Self-check for face matching and clone hashes in analyze(). Run from the repo root:
     .venv/Scripts/python api/test_face.py
 Uses the group photo bundled with InsightFace and a local web server, so no team photos or X calls.
 """
@@ -14,7 +14,7 @@ from insightface.data import get_image
 
 from analyze import analyze
 from face import face_model
-from signals import CLONE_MAX_DISTANCE
+from signals import CLONE_MAX_DISTANCE, clusters
 
 group = get_image("t1")
 faces = sorted(face_model().get(group), key=lambda f: f.bbox[0])
@@ -73,6 +73,9 @@ print(f"PDQ distance: repost {distance(same, repost)}  different photo {distance
 assert len(same.pdq) == 64 and same.pdq == analyze(url + "group.jpg", enrolled).pdq
 assert distance(same, repost) <= CLONE_MAX_DISTANCE < distance(same, other)
 assert len(clip.pdq) == 64
+# The blank image is too flat to hash, so it never joins a clone cluster.
+assert none.pdq == "", none.pdq
+assert clusters([same.pdq, repost.pdq, other.pdq, none.pdq]) == [0, 0, 2, None]
 for bad in ("not_an_image.jpg", "missing.jpg"):
     try:
         analyze(url + bad, enrolled)
