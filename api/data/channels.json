@@ -24,7 +24,7 @@
         {"question": "Please share the content that might be violating our rules", "required": false, "type": "text",
          "value": "{content_urls}"},
         {"question": "Please provide more details about what's happening", "required": false, "type": "textarea",
-         "value": "<rendered api/templates/notice.md>"}
+         "value": "<rendered api/templates/details.md>"}
       ],
       "checkboxes": [
         {"label": "It's okay to include the content being reported in updates sent to me in the future.",
