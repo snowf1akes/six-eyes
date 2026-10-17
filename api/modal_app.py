@@ -25,14 +25,15 @@ image = (
     .pip_install_from_requirements(str(Path(__file__).with_name("requirements.txt")))
     .run_function(fetch_face_model)  # bake the buffalo_l weights into the image
     .env({"DB_PATH": "/data/six_eyes.db"})
-    .add_local_python_source("main")
+    .add_local_python_source("main", "x", "signals", "analyze")
+    .add_local_file(Path(__file__).with_name("data") / "keywords.json", "/root/data/keywords.json")
 )
 
 
 # ponytail: one container is the only SQLite writer; Modal commits the Volume in the
 # background every few seconds and on shutdown. Move to Postgres before scaling out.
-@app.function(image=image, volumes={"/data": db_volume}, cpu=2, memory=2048,
-              max_containers=1, scaledown_window=600, timeout=120)
+@app.function(image=image, volumes={"/data": db_volume}, secrets=[modal.Secret.from_name("six-eyes-x")],
+              cpu=2, memory=2048, max_containers=1, scaledown_window=600, timeout=120)
 @modal.concurrent(max_inputs=20)
 @modal.asgi_app()
 def web():
