@@ -85,6 +85,9 @@ def embed(photo: bytes, n: int) -> np.ndarray:
     img = cv2.imdecode(np.frombuffer(photo, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(422, f"Photo {n} isn't an image we can read. Use JPG, PNG or WebP.")
+    # The detector misses faces that fill most of the frame (close-up selfies); a border fixes that.
+    h, w = img.shape[:2]
+    img = cv2.copyMakeBorder(img, h // 4, h // 4, w // 4, w // 4, cv2.BORDER_CONSTANT)
     faces = face_model().get(img)
     if not faces:
         raise HTTPException(422, f"No face found in photo {n}. Use a clear, front-facing selfie.")

@@ -57,5 +57,25 @@ r = post(a, signature="someone else")
 assert r.status_code == 422 and "type your full name" in r.text, r.text
 r = post(a, consent="false")
 assert r.status_code == 422 and "consent" in r.text, r.text
+r = post(a + [a[0], a[1], a[2]])
+assert r.status_code == 422 and "3 to 5" in r.text, r.text
+r = post([a[0], b"not an image", a[2]])
+assert r.status_code == 422 and "isn't an image" in r.text, r.text
+r = post([a[0], b"\xff" * (10 * 1024 * 1024 + 1), a[2]])
+assert r.status_code == 413, r.text
+
+# A phone-sized close-up (face fills ~80% of the frame) must enroll. It is also >1 MB, so it
+# spools to a temp file, which must be gone after the request; no image bytes may reach the DB.
+x1, y1, x2, y2 = faces[0].bbox.astype(int)
+p = (x2 - x1) // 8
+closeup = cv2.resize(group[y1 - p:y2 + p, x1 - p:x2 + p], None, fx=12, fy=12, interpolation=cv2.INTER_CUBIC)
+big = cv2.imencode(".png", closeup)[1].tobytes()
+assert len(big) > 1024 * 1024
+before = set(os.listdir(tempfile.gettempdir()))
+r = post([big, a[1], a[2]])
+assert r.status_code == 200, r.text
+assert set(os.listdir(tempfile.gettempdir())) - before == set(), "an upload was left in the temp dir"
+db_bytes = open(DB_PATH, "rb").read()
+assert b"\xff\xd8\xff" not in db_bytes and b"\x89PNG" not in db_bytes, "image bytes found in the database"
 
 print("enroll self-check passed")
