@@ -7,6 +7,9 @@ Inside a Daytona sandbox it runs as:
 import json
 import sys
 
+import cv2
+import numpy as np
+import pdqhash
 from pydantic import BaseModel
 
 import face
@@ -24,12 +27,20 @@ class AnalyzeResult(BaseModel):
 
 
 def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
-    face_sim, frame_drift = face.match(media_url, user_embedding)
-    # ponytail: face match is real; the detector fields are fixed placeholders until A6 lands.
+    frames, is_video = face.download(media_url)
+    face_sim, frame_drift = face.match(frames, is_video, user_embedding)
+    # ponytail: face match and PDQ are real; the detector fields are fixed placeholders until A6 lands.
     return AnalyzeResult(
         face_sim=round(face_sim, 4), frame_drift=frame_drift and round(frame_drift, 6),
-        fake_prob=0.91, generator_guess="swap", recon_score=0.031, c2pa=None, nsfw=0.05, pdq="0" * 64,
+        fake_prob=0.91, generator_guess="swap", recon_score=0.031, c2pa=None, nsfw=0.05,
+        pdq=pdq(frames[len(frames) // 2]),
     )
+
+
+def pdq(img: np.ndarray) -> str:
+    """64-hex PDQ hash of a BGR image; for a video, analyze() hashes the middle sampled frame."""
+    bits, _quality = pdqhash.compute(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    return np.packbits(bits.astype(np.uint8)).tobytes().hex()
 
 
 if __name__ == "__main__":

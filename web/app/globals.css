@@ -177,6 +177,7 @@ svg {
   border: 1px solid transparent;
   border-radius: 10px;
   font: 500 0.875rem/1 var(--font-sans), system-ui, sans-serif;
+  text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
@@ -466,6 +467,153 @@ svg {
 .done-mark {
   width: 34px;
   height: 34px;
+}
+
+/* Dashboard: one sheet per found post, media blurred until the person chooses to look. */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.case-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.case {
+  display: grid;
+  overflow: hidden;
+}
+@media (min-width: 768px) {
+  .case {
+    grid-template-columns: 320px 1fr;
+  }
+}
+.case-media {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+  overflow: hidden;
+  background: var(--secondary);
+}
+.case-media img,
+.case-media video {
+  width: 100%;
+  height: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  filter: blur(32px) saturate(0.6);
+  transform: scale(1.15);
+  pointer-events: none;
+  transition: filter 200ms var(--ease-desk), transform 200ms var(--ease-desk);
+}
+.case-media.shown img,
+.case-media.shown video {
+  filter: none;
+  transform: none;
+  pointer-events: auto;
+}
+.reveal {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+}
+.case-media.shown .reveal {
+  top: auto;
+  bottom: 12px;
+  translate: -50% 0;
+}
+.case-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px;
+}
+@media (min-width: 640px) {
+  .case-body {
+    padding: 24px;
+  }
+}
+.case-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.case-text {
+  font-size: 0.9375rem;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.evidence {
+  display: grid;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--perforation);
+}
+@media (min-width: 1024px) {
+  .evidence {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+.evidence-group dl {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 0;
+}
+.evidence-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.evidence-row dt {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+.evidence-row dd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.evidence-row .hint {
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+.scan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.attest {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--perforation);
+}
+.attest-btn.pressed {
+  background: var(--mark);
+  border-color: var(--ink);
 }
 
 @media (prefers-reduced-transparency: reduce) {

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Check, CircleAlert, CircleCheck, ImagePlus } from "../icons";
 
@@ -92,6 +93,9 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
           <span className="meta">
             Signed {new Date(enrolled.signed_at).toLocaleString()} · User {enrolled.user_id}
           </span>
+          <Link className="btn btn-outline" href={`/dashboard?user=${enrolled.user_id}`}>
+            See found posts
+          </Link>
         </div>
       </section>
     );

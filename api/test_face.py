@@ -14,6 +14,7 @@ from insightface.data import get_image
 
 from analyze import analyze
 from face import face_model
+from signals import CLONE_MAX_DISTANCE
 
 group = get_image("t1")
 faces = sorted(face_model().get(group), key=lambda f: f.bbox[0])
@@ -32,6 +33,8 @@ enrolled = (enrolled / np.linalg.norm(enrolled)).tolist()
 root = tempfile.mkdtemp()
 blank = np.full((300, 300, 3), 127, np.uint8)
 cv2.imwrite(os.path.join(root, "group.jpg"), group)
+cv2.imwrite(os.path.join(root, "group_repost.jpg"), cv2.resize(group, None, fx=0.6, fy=0.6),
+            [cv2.IMWRITE_JPEG_QUALITY, 60])  # a re-uploaded copy: smaller, recompressed
 cv2.imwrite(os.path.join(root, "someone_else.jpg"), cv2.resize(crop(faces[1]), None, fx=3, fy=3))
 cv2.imwrite(os.path.join(root, "no_face.jpg"), blank)
 with open(os.path.join(root, "not_an_image.jpg"), "wb") as f:
@@ -64,6 +67,12 @@ assert same.face_sim > 0.6 and same.frame_drift is None, same
 assert other.face_sim < 0.3, other
 assert none.face_sim == 0.0, none
 assert clip.face_sim > 0.6 and clip.frame_drift is not None and clip.frame_drift < 0.01, clip
+repost = analyze(url + "group_repost.jpg", enrolled)
+distance = lambda a, b: (int(a.pdq, 16) ^ int(b.pdq, 16)).bit_count()  # noqa: E731
+print(f"PDQ distance: repost {distance(same, repost)}  different photo {distance(same, other)}")
+assert len(same.pdq) == 64 and same.pdq == analyze(url + "group.jpg", enrolled).pdq
+assert distance(same, repost) <= CLONE_MAX_DISTANCE < distance(same, other)
+assert len(clip.pdq) == 64
 for bad in ("not_an_image.jpg", "missing.jpg"):
     try:
         analyze(url + bad, enrolled)

@@ -85,6 +85,38 @@ client.post(f"/scan/{user_id}")
 assert since_ids[-1] == "12", since_ids
 assert client.post(f"/scan/{user_id}").json()["cases_found"] == 0, "sweep is off by default"
 
+# Dashboard list: highest priority first; a stranger's face (0.2) ranks at 0; clones count posts.
+r = client.get(f"/cases/{user_id}")
+assert r.status_code == 200, r.text
+listed = r.json()["cases"]
+assert len(listed) == len(cases()) and all(c["state"] == "found" for c in listed)
+prios = [c["priority"] for c in listed]
+assert prios == sorted(prios, reverse=True) and all(0 <= p <= 1 for p in prios), prios
+by_post = {c["post_id"]: c for c in listed}
+assert by_post["12"]["priority"] == 0 and by_post["10"]["priority"] > 0
+assert by_post["91"]["copies"] == 3 and by_post["91"]["found_at"], "posts 10, 12 and 91 share image a"
+assert by_post["91"]["scores"]["media"]["url"] == "https://p/s2"
+assert client.get(f"/cases/{user_id}?state=bogus").status_code == 422
+assert client.get("/cases/999").status_code == 404
+
+# Confirm: both attestations required; the whole clone cluster (posts 10, 12, 91 share image a) moves,
+# image b (post 10's second photo, its own cluster) stays found.
+case_91 = by_post["91"]["id"]
+for body in ({"is_me": True, "not_consensual": False}, {"is_me": False, "not_consensual": True}):
+    assert client.post(f"/cases/{case_91}/confirm", json=body).status_code == 422
+both = {"is_me": True, "not_consensual": True}
+assert client.post("/cases/999/confirm", json=both).status_code == 404
+r = client.post(f"/cases/{case_91}/confirm", json=both)
+assert r.status_code == 200, r.text
+cluster = {c[0] for c in cases() if c[3] in (ZERO, NEAR_ZERO)}
+assert set(r.json()["confirmed"]) == cluster and len(cluster) == 3, (r.json(), cluster)
+states = {c[3]: c[5] for c in cases()}
+assert states[ZERO] == states[NEAR_ZERO] == "confirmed" and states[FAR] == "found", states
+assert {c["post_id"] for c in client.get(f"/cases/{user_id}?state=confirmed").json()["cases"]} == {"10", "12", "91"}
+events = con.execute("SELECT detail FROM events WHERE kind = 'confirmed'").fetchall()
+assert len(events) == 3 and all(json.loads(d)["not_consensual"] for (d,) in events)
+assert client.post(f"/cases/{case_91}/confirm", json=both).json() == {"confirmed": []}, "already confirmed"
+
 # Errors.
 assert client.post("/scan/999").status_code == 404
 

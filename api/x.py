@@ -109,6 +109,12 @@ def _search(q: str, limit: int, since_id: str | None) -> list[Post]:
     return posts[:limit]
 
 
+def lookup(post_id: str) -> Post | None:
+    """One post with its author and media; None if it's gone, hidden, or has no image or video."""
+    page = _get(f"/tweets/{post_id}", SEARCH_FIELDS)
+    return next(iter(_posts({**page, "data": [page["data"]]})), None) if "data" in page else None
+
+
 def is_live(post_id: str) -> bool:
     """False once the post is deleted, or hidden because its author was suspended or went private."""
     return "data" in _get(f"/tweets/{post_id}", {})
