@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { Check, CircleAlert, CircleCheck, ImagePlus } from "../icons";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const MAX_SELFIES = 5;
 
 type Enrolled = { user_id: number; photos_used: number; handles: string[]; signed_at: string };
 type Errors = Partial<Record<"name" | "selfies" | "consent" | "signature", string>>;
@@ -18,6 +19,20 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
   const previews = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
   useEffect(() => () => previews.forEach((u) => URL.revokeObjectURL(u)), [previews]);
 
+  function addSelfies(input: HTMLInputElement) {
+    // Copy before clearing: input.files is live, and clearing lets the same photo be picked again.
+    const picked = Array.from(input.files ?? []);
+    input.value = "";
+    const next = [...files, ...picked];
+    setFiles(next.slice(0, MAX_SELFIES));
+    setErrors((e) => ({
+      ...e,
+      selfies: next.length > MAX_SELFIES
+        ? `You can add up to ${MAX_SELFIES} selfies. We kept the first ${MAX_SELFIES}.`
+        : undefined,
+    }));
+  }
+
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
@@ -26,8 +41,8 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
 
     const next: Errors = {};
     if (!name) next.name = "Enter your full name.";
-    if (files.length < 3 || files.length > 5)
-      next.selfies = `Choose 3 to 5 selfies. You chose ${files.length}.`;
+    if (files.length < 3 || files.length > MAX_SELFIES)
+      next.selfies = `Choose 3 to ${MAX_SELFIES} selfies. You chose ${files.length}.`;
     if (form.get("consent") !== "on") next.consent = "Agree to the consent and authorization to enroll.";
     if (!signature || signature.toLowerCase() !== name.toLowerCase())
       next.signature = "Type your full name exactly as you entered it above.";
@@ -124,15 +139,25 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
           <input
             className="file-input" id="selfies" type="file" multiple
             accept="image/jpeg,image/png,image/webp"
+            disabled={files.length >= MAX_SELFIES}
             aria-invalid={!!errors.selfies}
             aria-describedby={errors.selfies ? "selfies-hint selfies-error" : "selfies-hint"}
-            onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+            onChange={(e) => addSelfies(e.currentTarget)}
           />
-          <label className="btn btn-outline" htmlFor="selfies">
-            <ImagePlus />
-            {files.length ? "Choose again" : "Choose selfies"}
-          </label>
-          {files.length > 0 && <span className="meta">{files.length} of 5</span>}
+          {files.length < MAX_SELFIES && (
+            <label className="btn btn-outline" htmlFor="selfies">
+              <ImagePlus />
+              {files.length ? "Add more" : "Choose selfies"}
+            </label>
+          )}
+          {files.length > 0 && (
+            <>
+              <span className="meta">{files.length} of {MAX_SELFIES}</span>
+              <button className="btn btn-ghost" type="button" onClick={() => { setFiles([]); setErrors((e) => ({ ...e, selfies: undefined })); }}>
+                Clear
+              </button>
+            </>
+          )}
         </div>
         {errors.selfies && <p className="error" id="selfies-error" role="alert">{errors.selfies}</p>}
       </section>
