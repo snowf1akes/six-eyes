@@ -18,11 +18,12 @@ import zlib
 from pathlib import Path
 
 import cv2
-import torch
 from diffusers import AutoencoderKL
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
-from crops import detector, face_crop, full_view  # noqa: E402  (shared with analyze(), so serving crops alike)
+# Shared with analyze(), so training and serving crop alike and use the same VAEs.
+from crops import detector, face_crop, full_view  # noqa: E402
+from recon import VAES, vae_roundtrip  # noqa: E402
 
 SRC = Path("data/deepfakeface")
 OUT = Path("data/processed")
@@ -32,11 +33,6 @@ VAE_SHARE = 0.3  # VAE fakes per pair: 3k for the full 10k run
 MAX_VAE_SIDE = 1024  # bigger photos are skipped for the VAE step so a 12 GB GPU never runs out of memory
 # DeepFakeFace folder -> generator class. The names match analyze()'s generator_guess.
 FAKES = {"text2img": "txt2img", "inpainting": "inpaint", "insight": "swap"}
-VAES = {  # name -> (Hugging Face repo, subfolder)
-    "sd15": ("stable-diffusion-v1-5/stable-diffusion-v1-5", "vae"),
-    "sdxl": ("stabilityai/sdxl-vae", None),
-    "flux": ("black-forest-labs/FLUX.1-schnell", "vae"),
-}
 
 
 def degrade(img, rng):
@@ -51,14 +47,6 @@ def views(img, model, rng):
     img = degrade(img, rng)
     face = face_crop(img, model)
     return None if face is None else {"face": face, "full": full_view(img)}
-
-
-@torch.no_grad()
-def vae_roundtrip(img, vae):
-    h, w = img.shape[0] // 8 * 8, img.shape[1] // 8 * 8  # VAEs need sides divisible by 8
-    x = torch.from_numpy(img[:h, :w, ::-1].copy()).permute(2, 0, 1)[None].cuda().float() / 127.5 - 1
-    y = vae.decode(vae.encode(x).latent_dist.mode()).sample[0].clamp(-1, 1)
-    return ((y + 1) * 127.5).round().byte().permute(1, 2, 0).cpu().numpy()[:, :, ::-1].copy()
 
 
 def save(rows, out, photo, label, gen, split, name):

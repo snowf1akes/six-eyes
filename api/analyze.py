@@ -4,6 +4,7 @@ B calls analyze(); A replaces the placeholder body with the real pipeline (task 
 Inside a Daytona sandbox it runs as:
     python analyze.py <media_url> '<embedding json>'   -> prints AnalyzeResult as JSON
 """
+import io
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 
 import crops
 import face
+import recon
 
 PDQ_MIN_QUALITY = 50  # PDQ's own cutoff: below it (flat or blank images) hashes match too easily
 DINO = "facebook/dinov3-vitl16-pretrain-lvd1689m"
@@ -35,25 +37,42 @@ class AnalyzeResult(BaseModel):
     frame_drift: float | None  # video only: variance of per-frame face_sim
     fake_prob: float           # detector: 1 - p(real)
     generator_guess: str       # real | swap | inpaint | txt2img | vae-decoded | no-face | not-scored
-    recon_score: float | None  # min VAE reconstruction distance; lower = more likely generated
-    c2pa: bool | None          # None = no Content Credentials found
+    recon_score: float | None  # SD1.5 VAE reconstruction distance; lower = more likely generated; None = not scored
+    c2pa: bool | None          # True valid / False invalid Content Credentials; None = none found
     nsfw: float
     pdq: str                   # 64-hex PDQ hash, used for clone clusters
 
 
 def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
-    frames, is_video = face.download(media_url)
+    frames, is_video, data, mime = face.download(media_url)
     face_sim, frame_drift = face.match(frames, is_video, user_embedding)
+    middle = frames[len(frames) // 2]  # a video's middle sampled frame stands for the clip
+    recon_score = None
     if face_sim >= SCORE_MIN_FACE_SIM:
         (fake_prob, generator_guess), nsfw_score = detect(frames), nsfw(frames)
+        if probe():  # the VAE ships alongside the detector; a checkout without data/models skips it
+            recon_score = round(recon.score(middle), 4)
     else:
         fake_prob, generator_guess, nsfw_score = 0.0, "not-scored", 0.0
-    # ponytail: recon_score and c2pa are fixed placeholders until their layers land.
     return AnalyzeResult(
         face_sim=round(face_sim, 4), frame_drift=frame_drift and round(frame_drift, 6),
-        fake_prob=round(fake_prob, 4), generator_guess=generator_guess, recon_score=0.031, c2pa=None,
-        nsfw=round(nsfw_score, 4), pdq=pdq(frames[len(frames) // 2]),
+        fake_prob=round(fake_prob, 4), generator_guess=generator_guess, recon_score=recon_score,
+        c2pa=c2pa(data, mime), nsfw=round(nsfw_score, 4), pdq=pdq(middle),
     )
+
+
+def c2pa(data: bytes, mime: str) -> bool | None:
+    """Content Credentials in the file itself: True when the manifest validates, False when it's there but
+    invalid (the content changed after signing), None when there is none. X may strip them on upload."""
+    import c2pa as c2pa_lib
+
+    try:
+        manifest = json.loads(c2pa_lib.Reader(mime, io.BytesIO(data)).json())
+    except c2pa_lib.C2paError as e:
+        if "ManifestNotFound" not in type(e).__name__:
+            log.warning("unreadable Content Credentials (%s): %s", mime, e)
+        return None
+    return manifest.get("validation_state") in ("Valid", "Trusted")
 
 
 @lru_cache(maxsize=1)

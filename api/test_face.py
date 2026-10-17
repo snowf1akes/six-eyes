@@ -76,8 +76,11 @@ assert len(clip.pdq) == 64
 # Detector fields: only faces that match the user get scored; someone else and the blank image don't.
 assert all(0 <= r.fake_prob <= 1 and 0 <= r.nsfw < 0.5 for r in (same, clip)), (same, clip)
 assert all(r.generator_guess == "not-scored" and r.fake_prob == r.nsfw == 0 for r in (other, none)), (other, none)
+assert other.recon_score is None and none.recon_score is None, (other, none)
+assert all(r.c2pa is None for r in (same, other, none, clip)), "the bundled photos carry no Content Credentials"
 if probe():  # a checkout without data/models keeps the placeholder
     assert same.generator_guess in {"real", "swap", "inpaint", "txt2img", "vae-decoded"}, same
+    assert same.recon_score > 0 and clip.recon_score > 0, (same, clip)
 # The blank image is too flat to hash, so it never joins a clone cluster.
 assert none.pdq == "", none.pdq
 assert clusters([same.pdq, repost.pdq, other.pdq, none.pdq]) == [0, 0, 2, None]
