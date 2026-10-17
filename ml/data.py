@@ -90,10 +90,15 @@ def save(rows, out, photo, label, gen, split, name):
                      "generator": gen, "view": view, "split": split})
 
 
-def main(n_pairs):
-    rng = random.Random(0)
+def detector():
     model = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"], providers=["CPUExecutionProvider"])
     model.prepare(ctx_id=-1, det_size=(320, 320))  # finds ~98% of these faces, ~10x faster than 640
+    return model
+
+
+def main(n_pairs):
+    rng = random.Random(0)
+    model = detector()
 
     ids = sorted(p.relative_to(SRC / "wiki").as_posix() for p in (SRC / "wiki").rglob("*.jpg"))
     rng.shuffle(ids)
