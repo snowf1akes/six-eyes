@@ -1,23 +1,32 @@
-"""Six Eyes API (task B1): SQLite tables + POST /enroll.
+"""Six Eyes API (tasks B1, B4): SQLite tables, POST /enroll and POST /scan/{user_id}.
 
-Run from the repo root:
-    .venv/Scripts/uvicorn api.main:app --reload --port 8000
+Run from the repo root (api/ must be the import root so main can import x, signals and analyze):
+    .venv/Scripts/uvicorn main:app --app-dir api --reload --port 8000
 """
 import json
+import logging
 import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
-from functools import lru_cache
 
 import cv2
+import httpx
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+import analyze
+import signals
+import x
+from face import face_model, faces  # noqa: F401  (face_model: modal_app and test_enroll preload it)
+
 DB_PATH = os.environ.get("DB_PATH", "six_eyes.db")
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 SAME_PERSON_MIN = 0.3  # cosine between one selfie and the rest; calibration knob, tune on the team set
+FACE_MATCH_MIN = 0.3   # face_sim a sweep hit needs to become a case; calibration knob, tune with A
+SWEEP_LIMIT = 100      # posts per keyword sweep; each is billed by X and every image is downloaded
+log = logging.getLogger("six_eyes")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -48,6 +57,10 @@ CREATE TABLE IF NOT EXISTS events (
   kind    TEXT NOT NULL,
   detail  TEXT
 );
+CREATE TABLE IF NOT EXISTS sweeps (
+  user_id  INTEGER PRIMARY KEY REFERENCES users(id),
+  since_id TEXT NOT NULL                -- newest post the keyword sweep has checked for this user
+);
 """
 
 
@@ -71,29 +84,15 @@ app.add_middleware(
 )
 
 
-@lru_cache(maxsize=1)
-def face_model():
-    from insightface.app import FaceAnalysis
-
-    model = FaceAnalysis(name="buffalo_l", allowed_modules=["detection", "recognition"],
-                         providers=["CPUExecutionProvider"])
-    model.prepare(ctx_id=-1, det_size=(640, 640))
-    return model
-
-
 def embed(photo: bytes, n: int) -> np.ndarray:
     img = cv2.imdecode(np.frombuffer(photo, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(422, f"Photo {n} isn't an image we can read. Use JPG, PNG or WebP.")
-    # The detector misses faces that fill most of the frame (close-up selfies); a border fixes that.
-    h, w = img.shape[:2]
-    img = cv2.copyMakeBorder(img, h // 4, h // 4, w // 4, w // 4, cv2.BORDER_CONSTANT)
-    faces = face_model().get(img)
-    if not faces:
+    found = faces(img, pad=True)
+    if not found:
         raise HTTPException(422, f"No face found in photo {n}. Use a clear, front-facing selfie.")
     # The largest face in a selfie is the person taking it.
-    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    return face.normed_embedding
+    return found[0].normed_embedding
 
 
 @app.get("/health")
@@ -148,3 +147,84 @@ def enroll(
              json.dumps(mean.round(6).tolist()), signed_at),
         ).lastrowid
     return {"user_id": user_id, "photos_used": len(vecs), "handles": handle_list, "signed_at": signed_at}
+
+
+@app.post("/scan/{user_id}")
+def scan(user_id: int, sweep: bool = False):
+    """Search X for the user, score every new image and video, and save each one as a found case.
+
+    sweep=true also checks recent posts that use deepfake terms without naming the user; those
+    become cases only when a face in them matches the user's enrolled face.
+    """
+    with closing(db()) as con:
+        user = con.execute("SELECT name, handles, embedding FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            raise HTTPException(404, f"No enrolled user with id {user_id}.")
+        seen = {r[0] for r in con.execute(
+            "SELECT DISTINCT post_id FROM cases WHERE user_id = ? AND post_id IS NOT NULL", (user_id,))}
+        # Only name-search cases bound the next name search; sweep cases come from a different query.
+        since_id = con.execute(
+            "SELECT MAX(CAST(post_id AS INTEGER)) FROM cases WHERE user_id = ? AND json_extract(scores, '$.source') = 'search'",
+            (user_id,)).fetchone()[0]
+        sweep_since = con.execute("SELECT since_id FROM sweeps WHERE user_id = ?", (user_id,)).fetchone()
+    name, handles, embedding = user[0], json.loads(user[1]), json.loads(user[2])
+
+    try:
+        posts = [(p, "search") for p in x.search(name, handles, since_id=since_id and str(since_id))]
+        swept = x.sweep(signals.search_terms(), SWEEP_LIMIT, sweep_since and sweep_since[0]) if sweep else []
+        posts += [(p, "sweep") for p in swept]
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(429, "X's rate limit was reached. Try the scan again in 15 minutes.")
+        raise HTTPException(502, f"X search failed with status {e.response.status_code}.")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Can't reach X right now. Try the scan again shortly.")
+
+    now = datetime.now(timezone.utc)
+    found, checked, failed = [], 0, 0
+    for post, source in posts:
+        if post.id in seen:
+            continue
+        seen.add(post.id)
+        checked += 1
+        post_signals = signals.signals(post, now).model_dump()
+        for media in post.media:
+            try:
+                result = analyze.analyze(media.url, embedding)
+            except Exception:  # one unreadable image or video shouldn't sink the whole scan
+                log.exception("analyze failed for post %s media %s", post.id, media.key)
+                failed += 1
+                continue
+            if source == "sweep" and result.face_sim < FACE_MATCH_MIN:
+                continue
+            found.append((post, result.pdq, {
+                **result.model_dump(), "signals": post_signals, "source": source, "media": media.model_dump(),
+                "possibly_sensitive": post.possibly_sensitive, "text": post.text,
+            }))
+
+    at = now.isoformat(timespec="seconds")
+    with closing(db()) as con, con:
+        for post, pdq, scores in found:
+            case_id = con.execute(
+                "INSERT INTO cases (user_id, post_id, author_id, url, pdq, scores) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, post.id, post.author.id if post.author else None, post.url, pdq, json.dumps(scores)),
+            ).lastrowid
+            con.execute("INSERT INTO events (case_id, at, kind, detail) VALUES (?, ?, 'found', ?)",
+                        (case_id, at, scores["source"]))
+        # Oldest first, so a cluster keeps the id of its first case as new clones join it.
+        cases = con.execute("SELECT id, pdq, cluster_id FROM cases WHERE user_id = ? ORDER BY id",
+                            (user_id,)).fetchall()
+        roots = signals.clusters([pdq for _, pdq, _ in cases])
+        con.executemany("UPDATE cases SET cluster_id = ? WHERE id = ?", [
+            (cases[root][0], case_id) for (case_id, _, old), root in zip(cases, roots)
+            if root is not None and cases[root][0] != old
+        ])
+        if swept:
+            con.execute("INSERT INTO sweeps (user_id, since_id) VALUES (?, ?) "
+                        "ON CONFLICT (user_id) DO UPDATE SET since_id = excluded.since_id",
+                        (user_id, max((p.id for p in swept), key=int)))
+    return {"user_id": user_id, "posts_checked": checked, "cases_found": len(found), "media_failed": failed}

@@ -1,5 +1,6 @@
 .env
 data/
+!api/data/
 *.db
 __pycache__/
 .venv/
