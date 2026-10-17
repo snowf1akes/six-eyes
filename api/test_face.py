@@ -73,12 +73,11 @@ print(f"PDQ distance: repost {distance(same, repost)}  different photo {distance
 assert len(same.pdq) == 64 and same.pdq == analyze(url + "group.jpg", enrolled).pdq
 assert distance(same, repost) <= CLONE_MAX_DISTANCE < distance(same, other)
 assert len(clip.pdq) == 64
-# Detector fields: a probability and one of the probe's classes; the blank image has no face to score.
-assert all(0 <= r.fake_prob <= 1 for r in (same, other, clip)), (same, other, clip)
-assert all(0 <= r.nsfw < 0.5 for r in (same, other, none, clip)), "the bundled photos are all safe for work"
+# Detector fields: only faces that match the user get scored; someone else and the blank image don't.
+assert all(0 <= r.fake_prob <= 1 and 0 <= r.nsfw < 0.5 for r in (same, clip)), (same, clip)
+assert all(r.generator_guess == "not-scored" and r.fake_prob == r.nsfw == 0 for r in (other, none)), (other, none)
 if probe():  # a checkout without data/models keeps the placeholder
     assert same.generator_guess in {"real", "swap", "inpaint", "txt2img", "vae-decoded"}, same
-    assert none.fake_prob == 0.0 and none.generator_guess == "no-face", none
 # The blank image is too flat to hash, so it never joins a clone cluster.
 assert none.pdq == "", none.pdq
 assert clusters([same.pdq, repost.pdq, other.pdq, none.pdq]) == [0, 0, 2, None]

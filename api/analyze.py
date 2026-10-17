@@ -23,6 +23,9 @@ PDQ_MIN_QUALITY = 50  # PDQ's own cutoff: below it (flat or blank images) hashes
 DINO = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 NSFW = "Falconsai/nsfw_image_detection"
 FAKE_THRESHOLD = 0.5  # ponytail: placeholder cutoff; the A4 eval picks the one with 95% precision on val
+# Below this face_sim the face isn't the user's ("Unlikely to be you" on the dashboard), so its deepfake
+# and NSFW scores can't change the case; skipping them keeps a scan inside Modal's 150 s web request limit.
+SCORE_MIN_FACE_SIM = 0.3
 MODELS = Path(os.environ.get("MODELS_DIR", Path(__file__).resolve().parents[1] / "data" / "models"))
 log = logging.getLogger("six_eyes")
 
@@ -31,7 +34,7 @@ class AnalyzeResult(BaseModel):
     face_sim: float            # cosine vs. the user's enrolled ArcFace embedding
     frame_drift: float | None  # video only: variance of per-frame face_sim
     fake_prob: float           # detector: 1 - p(real)
-    generator_guess: str       # real | swap | inpaint | txt2img | vae-decoded | no-face
+    generator_guess: str       # real | swap | inpaint | txt2img | vae-decoded | no-face | not-scored
     recon_score: float | None  # min VAE reconstruction distance; lower = more likely generated
     c2pa: bool | None          # None = no Content Credentials found
     nsfw: float
@@ -41,12 +44,15 @@ class AnalyzeResult(BaseModel):
 def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
     frames, is_video = face.download(media_url)
     face_sim, frame_drift = face.match(frames, is_video, user_embedding)
-    fake_prob, generator_guess = detect(frames)
+    if face_sim >= SCORE_MIN_FACE_SIM:
+        (fake_prob, generator_guess), nsfw_score = detect(frames), nsfw(frames)
+    else:
+        fake_prob, generator_guess, nsfw_score = 0.0, "not-scored", 0.0
     # ponytail: recon_score and c2pa are fixed placeholders until their layers land.
     return AnalyzeResult(
         face_sim=round(face_sim, 4), frame_drift=frame_drift and round(frame_drift, 6),
         fake_prob=round(fake_prob, 4), generator_guess=generator_guess, recon_score=0.031, c2pa=None,
-        nsfw=round(nsfw(frames), 4), pdq=pdq(frames[len(frames) // 2]),
+        nsfw=round(nsfw_score, 4), pdq=pdq(frames[len(frames) // 2]),
     )
 
 
