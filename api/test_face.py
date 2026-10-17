@@ -1,4 +1,4 @@
-"""Self-check for face matching in analyze(). Run from the repo root:
+"""Self-check for face matching and clone hashes in analyze(). Run from the repo root:
     .venv/Scripts/python api/test_face.py
 Uses the group photo bundled with InsightFace and a local web server, so no team photos or X calls.
 """
@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from insightface.data import get_image
 
+import signals
 from analyze import analyze
 from face import face_model
 
@@ -71,5 +72,15 @@ for bad in ("not_an_image.jpg", "missing.jpg"):
     except Exception as e:
         assert not isinstance(e, AssertionError), e
 assert not os.listdir(tempfile.tempdir), "a downloaded video was left in the temp dir"
+
+# Clone hashes: a smaller, recompressed copy of the group photo clusters with it; someone else's
+# photo doesn't, and the blank image is too flat to hash.
+cv2.imwrite(os.path.join(root, "group_copy.jpg"), cv2.resize(group, None, fx=0.5, fy=0.5),
+            [cv2.IMWRITE_JPEG_QUALITY, 60])
+copy = analyze(url + "group_copy.jpg", enrolled)
+print(f"pdq distance, copy: {(int(same.pdq, 16) ^ int(copy.pdq, 16)).bit_count()}  "
+      f"someone else: {(int(same.pdq, 16) ^ int(other.pdq, 16)).bit_count()}")
+assert len(same.pdq) == 64 and none.pdq == "", (same.pdq, none.pdq)
+assert signals.clusters([same.pdq, copy.pdq, other.pdq, none.pdq]) == [0, 0, 2, None]
 server.shutdown()
 print("face self-check passed")
