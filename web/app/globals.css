@@ -1,0 +1,486 @@
+/*
+ * DapUp's desk, borrowed for Six Eyes: a warm pale desk, white paper sheets,
+ * graphite ink, one highlighter that only marks what is chosen or done, and
+ * one red for errors. Light only, by design.
+ */
+:root {
+  --desk: #faf8f5;
+  --sheet: #ffffff;
+  --ink: #16181d;
+  --ink-2: #454a54;
+  --ink-3: #5e6470;
+  --mark: #b6eaff;
+  --destructive: #b42318;
+  --muted: #f2f3f6;
+  --accent: #e9ebef;
+  --secondary: #e2e5ea;
+  --border: rgb(22 24 29 / 0.12);
+  --input: rgb(22 24 29 / 0.42);
+  --perforation: rgb(22 24 29 / 0.25);
+  --shadow-paper: 0 1px 0 rgb(22 24 29 / 0.04), 0 1px 3px rgb(22 24 29 / 0.09);
+  --shadow-sheet: 0 1px 0 rgb(22 24 29 / 0.04), 0 2px 4px -1px rgb(22 24 29 / 0.06),
+    0 22px 44px -22px rgb(22 24 29 / 0.28);
+  --ease-desk: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+html {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  scrollbar-color: #b9bec8 var(--desk);
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--desk);
+  color: var(--ink);
+  caret-color: var(--ink);
+  line-height: 1.5;
+}
+::selection {
+  background: var(--mark);
+  color: var(--ink);
+}
+a {
+  color: var(--ink);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  text-wrap: balance;
+}
+p,
+ul {
+  margin: 0;
+}
+svg {
+  flex: none;
+}
+
+/* Shell */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: rgb(250 248 245 / 0.8);
+  backdrop-filter: blur(16px) saturate(150%);
+}
+.site-header-inner,
+.site-footer {
+  width: 100%;
+  max-width: 80rem;
+  margin: 0 auto;
+  padding-inline: 16px;
+}
+.site-header-inner {
+  height: 64px;
+  display: flex;
+  align-items: center;
+}
+.wordmark {
+  font-family: var(--font-display), serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.site-footer {
+  padding-block: 0 40px;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: 80rem;
+  margin: 0 auto;
+  padding: 24px 16px 96px;
+}
+@media (min-width: 640px) {
+  .page {
+    padding: 40px 24px 96px;
+  }
+  .site-header-inner,
+  .site-footer {
+    padding-inline: 24px;
+  }
+}
+@media (min-width: 1024px) {
+  .page {
+    padding-inline: 40px;
+  }
+  .site-header-inner,
+  .site-footer {
+    padding-inline: 40px;
+  }
+}
+.page-title {
+  font-family: var(--font-display), serif;
+  font-size: 2.25rem;
+  line-height: 1.05;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+@media (min-width: 640px) {
+  .page-title {
+    font-size: 3rem;
+  }
+}
+.lede {
+  max-width: 36rem;
+  font-size: 1.125rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.title {
+  font-family: var(--font-display), serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.meta {
+  font-size: 0.875rem;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Paper */
+.sheet {
+  background: var(--sheet);
+  border-radius: 6px;
+  box-shadow: var(--shadow-paper);
+}
+.sheet.lifted {
+  box-shadow: var(--shadow-sheet);
+}
+.perforation {
+  border-top: 1px dashed var(--perforation);
+}
+
+/* Buttons: they answer the press, not the release. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font: 500 0.875rem/1 var(--font-sans), system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 150ms ease-out, background-color 150ms ease-out, border-color 150ms ease-out,
+    box-shadow 150ms ease-out;
+}
+.btn:active {
+  transform: scale(0.97);
+}
+.btn:focus-visible,
+.file-input:focus-visible + .btn {
+  outline: none;
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgb(22 24 29 / 0.3);
+}
+.btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.btn svg {
+  width: 16px;
+  height: 16px;
+}
+.btn-primary {
+  background: var(--ink);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: rgb(22 24 29 / 0.85);
+}
+.btn-outline {
+  background: var(--sheet);
+  border-color: var(--perforation);
+  color: var(--ink);
+}
+.btn-outline:hover {
+  background: var(--muted);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--ink);
+}
+.btn-ghost:hover {
+  background: rgb(22 24 29 / 0.06);
+}
+.btn-lg {
+  height: 44px;
+  padding: 0 20px;
+  font-size: 1rem;
+}
+
+/* Fields */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.43;
+}
+.label .optional {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+.hint {
+  font-size: 0.875rem;
+  color: var(--ink-3);
+}
+.input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--input);
+  border-radius: 10px;
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+@media (min-width: 768px) {
+  .input {
+    font-size: 0.875rem;
+  }
+}
+.input::placeholder {
+  color: var(--ink-3);
+}
+.input:focus-visible {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgb(22 24 29 / 0.15);
+}
+.input[aria-invalid="true"] {
+  border-color: var(--destructive);
+  box-shadow: 0 0 0 3px rgb(180 35 24 / 0.2);
+}
+.error {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--destructive);
+}
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Checkbox: a ticked box is a chosen value, so it takes the highlighter. */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.check input {
+  appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  background: var(--sheet) center / 12px no-repeat;
+  cursor: pointer;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+.check input:checked {
+  border-color: var(--ink);
+  background-color: var(--mark);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2316181d' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+.check input:focus-visible {
+  outline: none;
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgb(22 24 29 / 0.3);
+}
+.check input[aria-invalid="true"] {
+  border-color: var(--destructive);
+  box-shadow: 0 0 0 3px rgb(180 35 24 / 0.2);
+}
+
+/* Square ID photos: on a form, a picture is a credential. */
+.slot {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px dashed var(--perforation);
+  border-radius: 6px;
+}
+.slot.invalid {
+  border-color: var(--destructive);
+}
+.photo {
+  width: 80px;
+  height: 80px;
+  border-radius: 4px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+/* A note, not a sheet. */
+.note {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+  font-size: 0.875rem;
+}
+.note svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  grid-row: span 2;
+}
+.note.is-error svg {
+  color: var(--destructive);
+}
+.note-title {
+  font-weight: 500;
+}
+.note p {
+  color: var(--ink-2);
+}
+
+/* State chip: a label and a drawn mark, never colour alone. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.chip svg {
+  width: 14px;
+  height: 14px;
+}
+.chip-done {
+  background: var(--mark);
+  color: var(--ink);
+}
+
+/* Legal text: generous leading at a reading measure. */
+.legal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 65ch;
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  color: var(--ink-2);
+}
+.legal h3 {
+  margin-top: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.legal ul {
+  padding-left: 1.2em;
+}
+
+/* Enroll page */
+.enroll {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 42rem;
+}
+.enroll-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.enroll-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px;
+}
+@media (min-width: 640px) {
+  .enroll-sheet {
+    padding: 32px;
+  }
+}
+.enroll-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.enroll-section.perforation {
+  padding-top: 24px;
+}
+.two-up {
+  display: grid;
+  gap: 20px;
+}
+@media (min-width: 640px) {
+  .two-up {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.done-mark {
+  width: 34px;
+  height: 34px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .site-header {
+    background: var(--desk);
+    backdrop-filter: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
