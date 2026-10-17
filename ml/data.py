@@ -20,13 +20,13 @@ from pathlib import Path
 import cv2
 import torch
 from diffusers import AutoencoderKL
-from insightface.app import FaceAnalysis
-from insightface.utils.face_align import norm_crop
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+from crops import detector, face_crop, full_view  # noqa: E402  (shared with analyze(), so serving crops alike)
 
 SRC = Path("data/deepfakeface")
 OUT = Path("data/processed")
 MANIFEST = Path("data/manifest.csv")
-SIZE = 224
 VAL_PCT = 15
 VAE_SHARE = 0.3  # VAE fakes per pair: 3k for the full 10k run
 MAX_VAE_SIDE = 1024  # bigger photos are skipped for the VAE step so a 12 GB GPU never runs out of memory
@@ -45,26 +45,6 @@ def degrade(img, rng):
     img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
     _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, rng.randint(60, 95)])
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
-
-
-def face_crop(img, model):
-    # The detector misses faces that fill the frame; a border fixes that (same trick as api/main.py).
-    h, w = img.shape[:2]
-    img = cv2.copyMakeBorder(img, h // 4, h // 4, w // 4, w // 4, cv2.BORDER_CONSTANT)
-    faces = model.get(img)
-    if not faces:
-        return None
-    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    return norm_crop(img, face.kps, image_size=SIZE)
-
-
-def full_view(img):
-    # Center square crop, not letterbox: every fake is 512x512 but reals come in hundreds of shapes,
-    # so letterbox bars would appear only on reals and the model would learn "bars = real".
-    h, w = img.shape[:2]
-    s = min(h, w)
-    y, x = (h - s) // 2, (w - s) // 2
-    return cv2.resize(img[y:y + s, x:x + s], (SIZE, SIZE), interpolation=cv2.INTER_AREA)
 
 
 def views(img, model, rng):
@@ -88,12 +68,6 @@ def save(rows, out, photo, label, gen, split, name):
         cv2.imwrite(str(path), img)
         rows.append({"id": photo, "path": path.as_posix(), "label": label,
                      "generator": gen, "view": view, "split": split})
-
-
-def detector():
-    model = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"], providers=["CPUExecutionProvider"])
-    model.prepare(ctx_id=-1, det_size=(320, 320))  # finds ~98% of these faces, ~10x faster than 640
-    return model
 
 
 def main(n_pairs):

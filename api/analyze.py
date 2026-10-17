@@ -5,23 +5,33 @@ Inside a Daytona sandbox it runs as:
     python analyze.py <media_url> '<embedding json>'   -> prints AnalyzeResult as JSON
 """
 import json
+import logging
+import os
 import sys
+from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pdqhash
 from pydantic import BaseModel
 
+import crops
 import face
 
 PDQ_MIN_QUALITY = 50  # PDQ's own cutoff: below it (flat or blank images) hashes match too easily
+DINO = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+NSFW = "Falconsai/nsfw_image_detection"
+FAKE_THRESHOLD = 0.5  # ponytail: placeholder cutoff; the A4 eval picks the one with 95% precision on val
+MODELS = Path(os.environ.get("MODELS_DIR", Path(__file__).resolve().parents[1] / "data" / "models"))
+log = logging.getLogger("six_eyes")
 
 
 class AnalyzeResult(BaseModel):
     face_sim: float            # cosine vs. the user's enrolled ArcFace embedding
     frame_drift: float | None  # video only: variance of per-frame face_sim
     fake_prob: float           # detector: 1 - p(real)
-    generator_guess: str       # real | swap | inpaint | txt2img | vae-decoded
+    generator_guess: str       # real | swap | inpaint | txt2img | vae-decoded | no-face
     recon_score: float | None  # min VAE reconstruction distance; lower = more likely generated
     c2pa: bool | None          # None = no Content Credentials found
     nsfw: float
@@ -31,12 +41,80 @@ class AnalyzeResult(BaseModel):
 def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
     frames, is_video = face.download(media_url)
     face_sim, frame_drift = face.match(frames, is_video, user_embedding)
-    # ponytail: face match and PDQ are real; the detector fields are fixed placeholders until A6 lands.
+    fake_prob, generator_guess = detect(frames)
+    # ponytail: recon_score and c2pa are fixed placeholders until their layers land.
     return AnalyzeResult(
         face_sim=round(face_sim, 4), frame_drift=frame_drift and round(frame_drift, 6),
-        fake_prob=0.91, generator_guess="swap", recon_score=0.031, c2pa=None, nsfw=0.05,
-        pdq=pdq(frames[len(frames) // 2]),
+        fake_prob=round(fake_prob, 4), generator_guess=generator_guess, recon_score=0.031, c2pa=None,
+        nsfw=round(nsfw(frames), 4), pdq=pdq(frames[len(frames) // 2]),
     )
+
+
+@lru_cache(maxsize=1)
+def probe():
+    """The A3 detector: frozen DINOv3, its input normalization, the two logistic-regression heads and
+    the face detector used in training. None when MODELS has no heads (a checkout without data/)."""
+    if not (MODELS / "dinov3_binary.joblib").exists():
+        log.warning("No detector heads in %s, so fake_prob is a placeholder. Run ml/heads.py.", MODELS)
+        return None
+    import joblib
+    import torch
+    from transformers import AutoImageProcessor, AutoModel
+
+    gpu = torch.cuda.is_available()
+    model = AutoModel.from_pretrained(DINO, dtype=torch.bfloat16 if gpu else torch.float32)
+    model = model.to("cuda" if gpu else "cpu").eval()
+    proc = AutoImageProcessor.from_pretrained(DINO)
+    mean, std = (torch.tensor(v).view(1, 3, 1, 1) for v in (proc.image_mean, proc.image_std))
+    return (model, mean, std, joblib.load(MODELS / "dinov3_binary.joblib"),
+            joblib.load(MODELS / "dinov3_multi.joblib"), crops.detector())
+
+
+def detect(frames: list[np.ndarray]) -> tuple[float, str]:
+    """(fake_prob, generator_guess) from the DINOv3 probe, averaged over a video's sampled frames.
+
+    Each frame becomes the same two views as in training (ml/data.py, minus its random resize + JPEG)
+    and one feature row concat(face, full), as in ml/heads.py. Frames without a face are skipped.
+    """
+    p = probe()
+    if p is None:
+        return 0.91, "swap"
+    import torch
+
+    model, mean, std, binary, multi, detector = p
+    views = []
+    for frame in frames:
+        if (crop := crops.face_crop(frame, detector)) is not None:
+            views += [crop, crops.full_view(frame)]
+    if not views:
+        return 0.0, "no-face"
+    x = torch.from_numpy(np.stack([cv2.cvtColor(v, cv2.COLOR_BGR2RGB) for v in views])).permute(0, 3, 1, 2)
+    x = ((x.float() / 255 - mean) / std).to(model.device, model.dtype)
+    with torch.no_grad():
+        feats = model(pixel_values=x).pooler_output.float().cpu().numpy()
+    rows = feats.reshape(len(views) // 2, -1)  # [face, full] side by side per frame
+    fake_prob = float(binary.predict_proba(rows)[:, 1].mean())
+    if fake_prob < FAKE_THRESHOLD:
+        return fake_prob, "real"  # the generator head alone often says vae-decoded for sharp real photos
+    probs = multi.predict_proba(rows).mean(axis=0)
+    probs[list(multi.classes_).index("real")] = 0  # past the cutoff, name the likeliest generator
+    return fake_prob, str(multi.classes_[probs.argmax()])
+
+
+@lru_cache(maxsize=1)
+def nsfw_model():
+    import torch
+    from transformers import pipeline
+
+    return pipeline("image-classification", model=NSFW, device=0 if torch.cuda.is_available() else -1)
+
+
+def nsfw(frames: list[np.ndarray]) -> float:
+    """Probability of Falconsai's nsfw label, the highest over a video's sampled frames."""
+    from PIL import Image
+
+    images = [Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)) for f in frames]
+    return max(next(s["score"] for s in r if s["label"] == "nsfw") for r in nsfw_model()(images, top_k=None))
 
 
 def pdq(img: np.ndarray) -> str:

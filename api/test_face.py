@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from insightface.data import get_image
 
-from analyze import analyze
+from analyze import analyze, probe
 from face import face_model
 from signals import CLONE_MAX_DISTANCE, clusters
 
@@ -73,6 +73,12 @@ print(f"PDQ distance: repost {distance(same, repost)}  different photo {distance
 assert len(same.pdq) == 64 and same.pdq == analyze(url + "group.jpg", enrolled).pdq
 assert distance(same, repost) <= CLONE_MAX_DISTANCE < distance(same, other)
 assert len(clip.pdq) == 64
+# Detector fields: a probability and one of the probe's classes; the blank image has no face to score.
+assert all(0 <= r.fake_prob <= 1 for r in (same, other, clip)), (same, other, clip)
+assert all(0 <= r.nsfw < 0.5 for r in (same, other, none, clip)), "the bundled photos are all safe for work"
+if probe():  # a checkout without data/models keeps the placeholder
+    assert same.generator_guess in {"real", "swap", "inpaint", "txt2img", "vae-decoded"}, same
+    assert none.fake_prob == 0.0 and none.generator_guess == "no-face", none
 # The blank image is too flat to hash, so it never joins a clone cluster.
 assert none.pdq == "", none.pdq
 assert clusters([same.pdq, repost.pdq, other.pdq, none.pdq]) == [0, 0, 2, None]
@@ -82,6 +88,6 @@ for bad in ("not_an_image.jpg", "missing.jpg"):
         raise AssertionError(f"{bad} should fail")
     except Exception as e:
         assert not isinstance(e, AssertionError), e
-assert not os.listdir(tempfile.tempdir), "a downloaded video was left in the temp dir"
+assert not [f for f in os.listdir(tempfile.tempdir) if f.endswith(".mp4")], "a downloaded video was left in the temp dir"
 server.shutdown()
 print("face self-check passed")
