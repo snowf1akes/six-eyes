@@ -68,6 +68,8 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
         return;
       }
       setEnrolled(data);
+      // Start the first scan now, so found posts are waiting by the time the dashboard opens.
+      fetch(`${API}/scan/${data.user_id}?sweep=true&background=true`, { method: "POST" }).catch(() => {});
     } catch {
       setServerError("Can't reach the Six Eyes server. Check that the API is running, then try again.");
     } finally {
