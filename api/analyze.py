@@ -28,22 +28,23 @@ class AnalyzeResult(BaseModel):
     pdq: str                   # 64-hex PDQ hash, used for clone clusters
 
 
-def pdq(img: np.ndarray) -> str:
-    """64-hex PDQ hash of a BGR image, or "" when the image is too flat to hash reliably."""
-    bits, quality = pdqhash.compute(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    # ponytail: our own bit order; convert to ThreatExchange's hex layout before sharing hashes outside Six Eyes.
-    return np.packbits(bits.astype(np.uint8)).tobytes().hex() if quality >= PDQ_MIN_QUALITY else ""
-
-
 def analyze(media_url: str, user_embedding: list[float]) -> AnalyzeResult:
-    frames, is_video = face.fetch(media_url)
+    frames, is_video = face.download(media_url)
     face_sim, frame_drift = face.match(frames, is_video, user_embedding)
-    # ponytail: face match and pdq are real; the detector fields are fixed placeholders until A6 lands.
+    # ponytail: face match and PDQ are real; the detector fields are fixed placeholders until A6 lands.
     return AnalyzeResult(
         face_sim=round(face_sim, 4), frame_drift=frame_drift and round(frame_drift, 6),
         fake_prob=0.91, generator_guess="swap", recon_score=0.031, c2pa=None, nsfw=0.05,
-        pdq=pdq(frames[len(frames) // 2]),  # a video's middle sampled frame stands for the whole clip
+        pdq=pdq(frames[len(frames) // 2]),
     )
+
+
+def pdq(img: np.ndarray) -> str:
+    """64-hex PDQ hash of a BGR image, or "" when it's too flat to hash reliably (it then joins no
+    clone cluster). For a video, analyze() hashes the middle sampled frame."""
+    bits, quality = pdqhash.compute(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    # ponytail: our own bit order; convert to ThreatExchange's hex layout before sharing hashes outside Six Eyes.
+    return np.packbits(bits.astype(np.uint8)).tobytes().hex() if quality >= PDQ_MIN_QUALITY else ""
 
 
 if __name__ == "__main__":

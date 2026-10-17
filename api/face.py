@@ -45,15 +45,11 @@ def similarity(img: np.ndarray, user: np.ndarray) -> float | None:
     return max(float(f.normed_embedding @ user) for f in found) if found else None
 
 
-def fetch(media_url: str) -> tuple[list[np.ndarray], bool]:
-    """(frames, is_video) for an image or video URL, downloaded once and shared by every check in
-    analyze(). An image is one frame; a video is up to VIDEO_FRAMES frames sampled evenly.
-    """
+def download(media_url: str) -> tuple[list[np.ndarray], bool]:
+    """The image, or up to VIDEO_FRAMES frames sampled evenly across a video; and whether it's a video."""
     with httpx.stream("GET", media_url, timeout=30, follow_redirects=True) as r:
         r.raise_for_status()
-        is_video = (r.headers.get("content-type", "").startswith("video/")
-                    or urlsplit(media_url).path.endswith(".mp4"))
-        if is_video:
+        if r.headers.get("content-type", "").startswith("video/") or urlsplit(media_url).path.endswith(".mp4"):
             return _video_frames(r), True
         data = _read(r, MAX_IMAGE_BYTES)
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
@@ -63,17 +59,17 @@ def fetch(media_url: str) -> tuple[list[np.ndarray], bool]:
 
 
 def match(frames: list[np.ndarray], is_video: bool, user_embedding: list[float]) -> tuple[float, float | None]:
-    """(face_sim, frame_drift) for frames from fetch().
+    """(face_sim, frame_drift) for downloaded media.
 
-    face_sim is the best match across all faces (and, for video, all sampled frames); 0.0 when
-    no face is found. frame_drift is the variance of per-frame face_sim, for video only.
+    face_sim is the best match across all faces in all frames; 0.0 when no face is found.
+    frame_drift is the variance of per-frame face_sim, for video only.
     """
     user = np.asarray(user_embedding, dtype=np.float32)
     user /= np.linalg.norm(user)
-    if not is_video:
-        return similarity(frames[0], user) or 0.0, None
-    sims = [s for frame in frames if (s := similarity(frame, user)) is not None]
-    return (max(sims), float(np.var(sims))) if sims else (0.0, None)
+    sims = [s for f in frames if (s := similarity(f, user)) is not None]
+    if not sims:
+        return 0.0, None
+    return max(sims), float(np.var(sims)) if is_video else None
 
 
 def _video_frames(r: httpx.Response) -> list[np.ndarray]:
@@ -86,7 +82,7 @@ def _video_frames(r: httpx.Response) -> list[np.ndarray]:
         try:
             n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             frames = []
-            for i in sorted({int(i) for i in np.linspace(0, n - 1, VIDEO_FRAMES)} if n > 0 else ()):
+            for i in sorted({int(i) for i in np.linspace(0, max(n - 1, 0), VIDEO_FRAMES)}) if n > 0 else []:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, i)
                 ok, frame = cap.read()
                 if ok:
