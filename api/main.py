@@ -1,7 +1,7 @@
 """Six Eyes API: SQLite tables, POST /enroll, POST /scan/{user_id}, GET /cases/{user_id},
 POST /cases/{case_id}/confirm, POST /cases/{case_id}/notice, the deadline recheck (POST /recheck,
-POST /timewarp/{case_id}), and the case worker (caseworker.py): POST /cases/{case_id}/work and
-GET /messages/{user_id}.
+POST /timewarp/{case_id}), and the case worker (caseworker.py) which owns the 48-hour wait:
+POST /cases/{case_id}/work and GET /messages/{user_id}.
 
 Run from the repo root (api/ must be the import root so main can import x, signals and analyze):
     .venv/Scripts/uvicorn main:app --app-dir api --reload --port 8000
@@ -15,7 +15,26 @@ import sqlite3
 import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
+
+
+def _load_local_env() -> None:
+    """Uvicorn does not read .env. Skip when DB_PATH is already set (tests, Modal)."""
+    if "DB_PATH" in os.environ:
+        return
+    path = Path(__file__).resolve().parents[1] / ".env"
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'").strip('"'))
+
+
+_load_local_env()
 
 import cv2
 import httpx
@@ -348,7 +367,8 @@ def priority(scores: dict, copies: int) -> float:
 def list_cases(user_id: int, state: str = "found"):
     """The user's cases in one state, highest priority first. Media stays on X; only its URL is sent.
 
-    Loading the dashboard first rechecks the user's cases past their removal deadline."""
+    Loading the dashboard first wakes any overdue Factory deadline sessions (or settles
+    them itself if the case worker is off)."""
     if state not in CASE_STATES:
         raise HTTPException(422, f"state must be one of: {', '.join(CASE_STATES)}.")
     with closing(db()) as con:
@@ -516,12 +536,15 @@ def work_case(case_id: int):
 def recheck(user_id: int | None = None) -> list[dict]:
     """Settle every noticed clone cluster past its deadline (the user's, or everyone's).
 
-    Each post in the cluster is checked on X: posts that are gone become resolved, posts still up
-    become escalated with an FTC complaint packet. Runs when the dashboard loads (GET /cases) rather
-    than on a timer, since Modal stops the API container when it's idle. A cluster X can't be
-    checked for right now stays noticed and is tried again next time.
+    Factory owns the clock: wait_until sleeps or arms a timer, and a deadline session checks X.
+    This path is the backup when that timer died (dashboard load, POST /recheck, Modal's hourly
+    sweep). When the case worker is on it only starts those sessions. When it's off we settle
+    here and text the user ourselves. A cluster X can't be checked for stays noticed.
     """
     with RECHECK_LOCK:  # one recheck at a time, so no post is checked (and billed) twice
+        if caseworker.enabled():
+            caseworker.wake_due(user_id)
+            return []
         with closing(db()) as con:
             due = con.execute(
                 "SELECT user_id, COALESCE(cluster_id, id) AS k, MIN(id) FROM cases WHERE state = 'noticed' AND due_at <= ?"
@@ -541,9 +564,7 @@ def recheck(user_id: int | None = None) -> list[dict]:
             escalated, packet = escalate([i for i, _, url in rows if live[url]], "recheck")
             settled.append({"case_id": first, "resolved": resolved, "escalated": escalated, "ftc_packet": packet,
                             "ftc_url": channels.escalation()["ftc"] if escalated else None})
-            # The case worker texts the user when it's on; otherwise we send that text ourselves.
-            if not caseworker.start(first, "rechecked"):
-                tell_user(uid, first, *_settled_notice(resolved, escalated))
+            tell_user(uid, first, *_settled_notice(resolved, escalated))
         return settled
 
 
@@ -663,17 +684,29 @@ def timewarp(case_id: int):
         con.executemany("UPDATE cases SET due_at = ? WHERE id = ?", [(now, i) for i in ids])
         con.executemany("INSERT INTO events (case_id, at, kind, detail) VALUES (?, ?, 'timewarp', ?)",
                         [(i, now, json.dumps({"was_due_at": due_at})) for i in ids])
+    if caseworker.enabled():
+        caseworker.skip_deadline(case_id)
+        settled = caseworker.wait_settled(ids)
+        if not settled:
+            raise HTTPException(503, "Couldn't check the posts on X just now (is X_BEARER_TOKEN set?). Try again.")
+        return {"case_id": case_id, **settled}
     settled = [s for s in recheck(user_id) if set(s["resolved"] + s["escalated"]) & set(ids)]
     if not settled:
         raise HTTPException(503, "Couldn't check the posts on X just now (is X_BEARER_TOKEN set?). Try again.")
     return {"case_id": case_id, **settled[0]}
 
 
-# Modal calls this hourly too, so deadlines pass even for users who don't open their dashboard.
+# Modal calls this hourly too, so a Factory timer that died with the container still wakes.
 @app.post("/recheck")
 def recheck_all():
-    """Recheck every user's cases past their deadline."""
+    """Recheck every user's cases past their deadline (or wake Factory to do it)."""
     return {"settled": recheck()}
+
+
+@app.on_event("startup")
+def restore_caseworker_timers():
+    """Arm Factory deadline timers for noticed cases after a restart."""
+    caseworker.restore()
 
 
 def tell_user(user_id: int, case_id: int, text: str, link: str | None = None) -> None:

@@ -1,10 +1,15 @@
 """The case worker: a Factory Droid agent that takes each confirmed case to removal or escalation.
 
-main.confirm() starts it when a user confirms a case, main.recheck() starts it after settling a
-case past its deadline (so it can tell the user), and POST /cases/{id}/work has it check one case
-now. Each start is one fresh Droid session with four tools, all backed by code Six Eyes already has:
+main.confirm() starts it when a user confirms a case. It drafts the notice, texts the user, then
+owns the 48-hour clock: wait_until either sleeps until due_at (short demo deadlines) or arms a
+timer that starts a fresh session at the deadline. Dashboard load, POST /recheck and Modal's hourly
+sweep only wake overdue sessions if that timer died with the container. POST /timewarp/{id} cuts
+the wait short. POST /cases/{id}/work has it check one case now.
+
+Each start is one fresh Droid session with five tools, all backed by code Six Eyes already has:
 
     draft_notice(case_id)       the POST /cases/{id}/notice logic: TAKE IT DOWN packets, due in 48 hours
+    wait_until(case_id)         sleep until due_at when that's short; otherwise schedule a deadline session
     check_live(case_id)         main.post_status (x.is_live) on every noticed post in the clone cluster;
                                 removed posts become resolved (main.resolve)
     escalate(case_id)           posts still up after the deadline become escalated with an FTC complaint
@@ -25,6 +30,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -39,30 +45,33 @@ import channels
 import main
 
 SERVER = "six-eyes"
-TOOL_NAMES = ("draft_notice", "check_live", "escalate", "notify_user")
-TURN_TIMEOUT = 300  # seconds for one session; a case needs a handful of tool calls
+TOOL_NAMES = ("draft_notice", "wait_until", "check_live", "escalate", "notify_user")
+TURN_TIMEOUT = 300  # seconds of model/tool work in one session, not counting wait_until
+WAIT_INLINE_MAX = 120  # seconds we will sleep inside a turn (NOTICE_DEADLINE_SECONDS=5 demos)
 MAX_MESSAGE = 800   # characters in one update to the user
 MAX_MESSAGES = 2    # updates per session
 REASONS = {
     "confirmed": "The user just confirmed these posts show them and were shared without their consent.",
-    "rechecked": "The 48-hour removal deadline passed and Six Eyes just checked every post on X: removed "
-                 "posts are now resolved, posts still up are now escalated, with a complaint to the FTC prepared.",
+    "deadline": "The 48-hour removal deadline just passed. Check every noticed post on X, resolve "
+                "removed ones, escalate any still up, and tell the user.",
     "check": "The team asked for a check on this case now.",
 }
 SYSTEM = """You are the Six Eyes case worker. Six Eyes is the authorized representative of people whose \
 intimate images, real or AI-generated, were posted on X without their consent. It asks X to remove them \
 under the US TAKE IT DOWN Act, which gives a platform 48 hours from a valid request.
 
-You work one case per session and can act only through your four tools. Every fact you tell the user \
+You work one case per session and can act only through your five tools. Every fact you tell the user \
 must come from the briefing or a tool result.
 
 - The user just confirmed the case: call draft_notice. If it worked, call notify_user once: the removal \
 report for X is ready to submit, X must remove the posts within 48 hours of receiving it, and Six Eyes \
-will check back after the deadline.
-- Six Eyes just rechecked the case after the deadline: the briefing shows each post's new state. Call \
-notify_user once. If posts are still up, say so, tell them the next step is a complaint to the FTC at \
-https://takeitdown.ftc.gov, and that the team has the packet and can file it as their authorized \
-representative. Pass that URL as link. Don't call check_live or escalate; it's done.
+will check back after the deadline. Then call wait_until. If it says the deadline has passed (or the \
+wait was skipped), call check_live; if a post is still up after the deadline, call escalate, then \
+notify_user again with https://takeitdown.ftc.gov as link when anything is still up. If wait_until \
+says a new session will start later, stop after the first notify_user.
+- The removal deadline just passed: call check_live. If every post is gone, tell the user they were \
+removed. If a post is still up, call escalate, then notify_user the same way (FTC URL as link). \
+Don't call wait_until.
 - The team asked for a check: call check_live. If every post is gone, tell the user they were removed. If \
 a post is still up after the deadline, call escalate, then notify_user the same way (FTC URL as link). \
 Before the deadline, never escalate, and only notify the user if something changed.
@@ -76,6 +85,9 @@ End with one sentence for the team log saying what you did."""
 log = logging.getLogger("six_eyes.caseworker")
 RUNNING: set[tuple[int, int]] = set()  # (user_id, cluster_id) with a session in progress
 RUNNING_LOCK = threading.Lock()
+TIMERS: dict[tuple[int, int], threading.Timer] = {}  # scheduled deadline session
+WAKE: dict[tuple[int, int], threading.Event] = {}    # in-session wait_until, so time-warp can cut it short
+TIMERS_LOCK = threading.Lock()
 
 
 class ToolError(Exception):
@@ -131,15 +143,16 @@ def _work_and_record(run: Run, key: tuple[int, int]) -> None:
 
 
 async def work(run: Run) -> dict:
-    """One Droid session on the case: the briefing as the prompt, the four tools, nothing else."""
+    """One Droid session on the case: the briefing as the prompt, the five tools, nothing else."""
     config = SessionConfig(system_prompt=SYSTEM, mcp_servers=[create_sdk_mcp_server(SERVER, tools(run))],
                            autonomy=Autonomy.OFF, disable_builtin_skills=True)
     runtime = Runtime(executable=os.environ["DROID_PATH"]) if os.environ.get("DROID_PATH") else None
+    key = os.environ.get("FACTORY_API_KEY") or None
     with tempfile.TemporaryDirectory() as empty:  # Droid's working directory: no files to read
         async with Session(cwd=empty, model=os.environ.get("CASEWORKER_MODEL", "auto"), config=config,
                            interactions=InteractionHandlers(on_permission=allow_case_tools),
-                           runtime=runtime) as session:
-            async with session.stream(briefing(run), timeout=TURN_TIMEOUT) as stream:
+                           runtime=runtime, api_key=key) as session:
+            async with session.stream(briefing(run), timeout=TURN_TIMEOUT + WAIT_INLINE_MAX) as stream:
                 async for _ in stream:
                     pass
             result = stream.result
@@ -167,7 +180,7 @@ def briefing(run: Run) -> str:
 
 
 def tools(run: Run) -> list:
-    """The four tools, bound to this run's case."""
+    """The five tools, bound to this run's case."""
     def call(f, *args) -> ToolResponse:
         run.calls.append(f"{f.__name__}({', '.join(map(repr, args))})")
         try:
@@ -181,6 +194,9 @@ def tools(run: Run) -> list:
     def draft(case_id: int) -> ToolResponse:
         return call(draft_notice, case_id)
 
+    def wait(case_id: int) -> ToolResponse:
+        return call(wait_until, case_id)
+
     def check(case_id: int) -> ToolResponse:
         return call(check_live, case_id)
 
@@ -193,6 +209,8 @@ def tools(run: Run) -> list:
     return [
         tool("draft_notice", "Make the TAKE IT DOWN removal reports for the case's confirmed posts, one per "
                              "posting account, and start the 48-hour deadline. Safe to call again.", draft),
+        tool("wait_until", "Wait until this case's removal deadline. Sleeps when the deadline is soon "
+                           "(demo). Otherwise schedules a new session at due_at and ends this one.", wait),
         tool("check_live", "Check on X whether each of the case's reported posts is still up. Posts that are "
                            "gone are marked removed. Only after the deadline, unless the team asked.", check),
         tool("escalate", "Escalate the case's posts that are still up after the deadline: prepares a "
@@ -221,12 +239,39 @@ def draft_notice(run: Run, case_id: int) -> str:
     return f"Nothing to draft: the posts are {', '.join(sorted({r[3] for r in rows}))}."
 
 
+def wait_until(run: Run, case_id: int) -> str:
+    """Sleep until due_at when that's short; otherwise arm a deadline session and stop this one."""
+    rows = [r for r in _own(run, case_id) if r[3] == "noticed" and r[5]]
+    if not rows:
+        raise ToolError("No deadline to wait for: call draft_notice first.")
+    due = _as_utc(min(r[5] for r in rows))
+    remaining = (due - datetime.now(timezone.utc)).total_seconds()
+    if remaining <= 0:
+        return f"The deadline already passed at {due.isoformat()}. Check the posts now."
+    if remaining > WAIT_INLINE_MAX:
+        _arm(run.case_id, due)
+        return (f"The deadline is {due.isoformat()}, too far to wait in this session. "
+                f"A new session will start then. Tell the user we'll check back, then stop.")
+    ev = threading.Event()
+    key = (run.user_id, run.cluster_id)
+    with TIMERS_LOCK:
+        WAKE[key] = ev
+    try:
+        skipped = ev.wait(timeout=remaining)
+    finally:
+        with TIMERS_LOCK:
+            WAKE.pop(key, None)
+    if skipped:
+        return "The wait was skipped (test). The deadline is now; check the posts now."
+    return f"Waited until {due.isoformat()}. The deadline has passed; check the posts now."
+
+
 def check_live(run: Run, case_id: int) -> str:
     rows = [r for r in _own(run, case_id) if r[3] == "noticed"]
     if run.live is None:
         if not rows:
             raise ToolError("No reported posts waiting on X: nothing to check.")
-        run.due = due = min(datetime.fromisoformat(r[5]) for r in rows)
+        run.due = due = min(_as_utc(r[5]) for r in rows)
         if datetime.now(timezone.utc) < due and run.reason != "check":
             raise ToolError(f"X has until {due.isoformat()} to remove the posts; check after that.")
         try:
@@ -250,7 +295,7 @@ def escalate(run: Run, case_id: int) -> str:
     up = [r for r in rows if r[3] == "noticed" and run.live.get(r[2])]
     if not up:
         raise ToolError("Nothing to escalate: no reported post is still up.")
-    due = min(datetime.fromisoformat(r[5]) for r in up)
+    due = min(_as_utc(r[5]) for r in up)
     if datetime.now(timezone.utc) < due:
         raise ToolError(f"Not yet: X has until {due.isoformat()} to remove the posts.")
     moved, _ = main.escalate([r[0] for r in up], "caseworker")
@@ -274,6 +319,117 @@ def notify_user(run: Run, user_id: int, text: str, link: str = "") -> str:
     run.messages += 1
     main.tell_user(user_id, run.case_id, text, link or None)
     return "Sent: it's on its way as a text if they enrolled a number."
+
+
+def wake_due(user_id: int | None = None) -> list[int]:
+    """Start a deadline session for each overdue noticed cluster. Used when the in-process timer died."""
+    with closing(main.db()) as con:
+        due = con.execute(
+            "SELECT user_id, COALESCE(cluster_id, id) AS k, MIN(id) FROM cases WHERE state = 'noticed' AND due_at <= ?"
+            + (" AND user_id = ?" if user_id is not None else "") + " GROUP BY user_id, k ORDER BY 3",
+            (_now(),) if user_id is None else (_now(), user_id)).fetchall()
+    started = []
+    for uid, cluster, first in due:
+        _disarm(uid, cluster)
+        if start(first, "deadline"):
+            started.append(first)
+    return started
+
+
+def skip_deadline(case_id: int) -> bool:
+    """Cut the wait short (time-warp). Wakes an in-session wait or starts a deadline session."""
+    run = load(case_id, "deadline")
+    if not run:
+        return False
+    key = (run.user_id, run.cluster_id)
+    with TIMERS_LOCK:
+        ev = WAKE.get(key)
+        timer = TIMERS.pop(key, None)
+    if timer:
+        timer.cancel()
+    if ev is not None:
+        ev.set()
+        return True
+    with RUNNING_LOCK:
+        if key in RUNNING:
+            return True
+    return start(case_id, "deadline")
+
+
+def wait_settled(case_ids: list[int], timeout: float | None = None) -> dict | None:
+    """Block until none of the cases are still noticed, then return the dashboard's settled shape."""
+    if not case_ids:
+        return None
+    limit = time.time() + (TURN_TIMEOUT + WAIT_INLINE_MAX if timeout is None else timeout)
+    marks = ",".join("?" * len(case_ids))
+    while time.time() < limit:
+        with closing(main.db()) as con:
+            rows = con.execute(f"SELECT id, state FROM cases WHERE id IN ({marks})", case_ids).fetchall()
+        if rows and all(state != "noticed" for _, state in rows):
+            resolved = [i for i, state in rows if state == "resolved"]
+            escalated = [i for i, state in rows if state == "escalated"]
+            packet, ftc = None, None
+            if escalated:
+                with closing(main.db()) as con:
+                    detail = con.execute("SELECT detail FROM events WHERE case_id = ? AND kind = 'escalated' "
+                                         "ORDER BY rowid DESC", (escalated[0],)).fetchone()
+                body = json.loads(detail[0]) if detail else {}
+                packet, ftc = body.get("ftc_packet"), body.get("ftc_url") or channels.escalation()["ftc"]
+            return {"resolved": resolved, "escalated": escalated, "ftc_packet": packet, "ftc_url": ftc}
+        time.sleep(0.05)
+    return None
+
+
+def restore() -> None:
+    """On API start: fire overdue clusters, arm timers for noticed cases still waiting."""
+    if not enabled():
+        return
+    now = datetime.now(timezone.utc)
+    with closing(main.db()) as con:
+        rows = con.execute(
+            "SELECT user_id, COALESCE(cluster_id, id) AS k, MIN(id), MIN(due_at) FROM cases "
+            "WHERE state = 'noticed' AND due_at IS NOT NULL GROUP BY user_id, k").fetchall()
+    for uid, cluster, first, due_at in rows:
+        due = _as_utc(due_at)
+        if due <= now:
+            start(first, "deadline")
+        else:
+            _arm(first, due)
+            log.info("armed case worker for cluster %s at %s (user %s)", cluster, due.isoformat(), uid)
+
+
+def _arm(case_id: int, due: datetime) -> None:
+    run = load(case_id, "deadline")
+    if not run:
+        return
+    key = (run.user_id, run.cluster_id)
+    delay = max(0.0, (due - datetime.now(timezone.utc)).total_seconds())
+    with TIMERS_LOCK:
+        old = TIMERS.pop(key, None)
+        if old:
+            old.cancel()
+        timer = threading.Timer(delay, _fire, args=(run.case_id, key))
+        timer.daemon = True
+        TIMERS[key] = timer
+        timer.start()
+
+
+def _fire(case_id: int, key: tuple[int, int]) -> None:
+    with TIMERS_LOCK:
+        TIMERS.pop(key, None)
+    start(case_id, "deadline")
+
+
+def _disarm(user_id: int, cluster_id: int) -> None:
+    with TIMERS_LOCK:
+        timer = TIMERS.pop((user_id, cluster_id), None)
+    if timer:
+        timer.cancel()
+
+
+def _as_utc(iso: str) -> datetime:
+    due = datetime.fromisoformat(iso)
+    return due if due.tzinfo else due.replace(tzinfo=timezone.utc)
 
 
 def _cluster(run: Run) -> list[tuple]:
