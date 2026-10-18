@@ -46,12 +46,15 @@ type Notice = {
   due_at: string;
   packets: Packet[];
 };
+type FtcField = { question: string; required: boolean; type: string; value: string; screen?: string };
 type Settled = {
   case_id: number;
   resolved: number[];
   escalated: number[];
   ftc_packet: string | null;
   ftc_url: string | null;
+  ftc_form?: FtcField[] | null;
+  dry_run?: boolean | null;
 };
 type Filing = {
   caseId: number;
@@ -130,6 +133,7 @@ export function Cases() {
   const [filings, setFilings] = useState<Filing[]>([]);
   const [settled, setSettled] = useState<Settled[]>([]);
   const [floating, setFloating] = useState<Floating | null>(null);
+  const [ftcFloat, setFtcFloat] = useState<{ win: Window; root: HTMLElement; s: Settled; formOpened: boolean } | null>(null);
   const [reload, setReload] = useState(0);
   const [filter, setFilter] = useState(0);
   const refresh = useCallback(() => setReload((n) => n + 1), []);
@@ -156,6 +160,23 @@ export function Cases() {
     setFilings((f) => f.map((x) => (x.caseId === filing.caseId ? filing : x)));
   }
 
+  function fileFtc(s: Settled) {
+    const opening = openFloat("The FTC form opens beside this. Follow each screen: choose the matching option, or paste when it asks for text.");
+    const form = openForm(Boolean(opening));
+    const start = ftcStartUrl(s.ftc_url);
+    if (form && start) form.location.href = start;
+    else form?.close();
+    opening?.then((win) => {
+      if (!win || win.closed) return;
+      const root = win.document.createElement("div");
+      root.className = "float";
+      win.document.body.replaceChildren(root);
+      win.document.title = "Six Eyes · FTC";
+      win.addEventListener("pagehide", () => setFtcFloat((cur) => (cur?.win === win ? null : cur)));
+      setFtcFloat({ win, root, s, formOpened: Boolean(form && s.ftc_url) });
+    });
+  }
+
   useEffect(() => {
     if (!user) return;
     let live = true;
@@ -167,7 +188,10 @@ export function Cases() {
           setLoad({ status: "error", message: typeof data.detail === "string" ? data.detail : "Couldn't load your found posts." });
         else {
           setLoad({ status: "ready", cases: data.cases });
-          setSettled(data.settled ?? []);
+          const now = data.settled ?? [];
+          const open = data.escalations ?? [];
+          const seen = new Set(now.map((s: Settled) => s.case_id));
+          setSettled([...now, ...open.filter((s: Settled) => !seen.has(s.case_id) && (s.ftc_packet || s.escalated?.length))]);
         }
       })
       .catch(() => live && setLoad({ status: "error", message: "Can't reach the Six Eyes server. Check that the API is running, then reload." }));
@@ -191,11 +215,12 @@ export function Cases() {
   return (
     <>
       {floating && floated?.notice && createPortal(<FloatPanel notice={floated.notice} formOpened={!!floated.formOpened} />, floating.root)}
+      {ftcFloat && createPortal(<FtcFloatPanel s={ftcFloat.s} formOpened={ftcFloat.formOpened} />, ftcFloat.root)}
       {filings.map((f) => (
-        <FilingNote key={f.caseId} filing={f} onRetried={onRetried} />
+        <FilingNote key={f.caseId} filing={f} onRetried={onRetried} onFileFtc={fileFtc} />
       ))}
       {settled.map((s) => (
-        <SettledNote key={s.case_id} s={s} />
+        <SettledNote key={s.case_id} s={s} onFile={fileFtc} />
       ))}
       <Scan user={user} onProgress={refresh} />
       {load.cases.length ? (
@@ -408,7 +433,7 @@ function CaseCard({ c, onConfirmed }: { c: Case; onConfirmed: (f: Filing, h: Hel
 const when = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 
-function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Filing) => void }) {
+function FilingNote({ filing, onRetried, onFileFtc }: { filing: Filing; onRetried: (f: Filing) => void; onFileFtc: (s: Settled) => void }) {
   const [busy, setBusy] = useState(false);
   const [skipError, setSkipError] = useState<string | null>(null);
   const { notice: n, error, ids, outcome } = filing;
@@ -478,7 +503,7 @@ function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Fili
       ))}
       {outcome ? (
         <div className="note-more">
-          <SettledNote s={outcome} />
+          <SettledNote s={outcome} onFile={onFileFtc} />
         </div>
       ) : n.dry_run ? (
         <div className="note-more actions">
@@ -492,39 +517,140 @@ function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Fili
   );
 }
 
-function SettledNote({ s }: { s: Settled }) {
+function SettledNote({ s, onFile }: { s: Settled; onFile?: (s: Settled) => void }) {
   const gone = s.resolved.length;
   const up = s.escalated.length;
   const posts = (n: number) => `${n} ${n === 1 ? "post" : "posts"}`;
   const title = up
     ? gone
       ? `${posts(gone)} taken down, ${posts(up)} still up`
-      : `${posts(up)} still up after 48 hours`
+      : `${posts(up)} still up after the deadline`
     : `${posts(gone)} taken down`;
+  const steps = s.ftc_form?.length ? s.ftc_form : s.ftc_packet
+    ? [{ question: "Full complaint packet", required: false, type: "textarea", value: s.ftc_packet }]
+    : [];
   return (
     <div className="note" role="status">
       {up ? <CircleAlert /> : <CircleCheck />}
       <span className="note-title">{title}</span>
       <p>
         {up
-          ? "X did not remove the remaining posts within 48 hours. The next step is a complaint to the Federal Trade Commission (it enforces the TAKE IT DOWN Act). Open the FTC form, then paste the packet below. You don’t need to describe the images. The team can file this as your authorized representative."
+          ? "X did not remove the remaining posts in time. Next step: a complaint to the FTC (it enforces the TAKE IT DOWN Act). Open the form — a guide stays on top matching each FTC screen. Choose the option it names, or paste when it asks for text. You don’t need to describe the images. Don’t file a test report for real."
           : "X removed the reported posts. Nothing else to do."}
       </p>
-      {s.ftc_packet && (
+      {up && (s.ftc_url || steps.length > 0) && (
         <div className="note-more">
-          {s.ftc_url && (
-            <a className="btn btn-outline" href={s.ftc_url} target="_blank" rel="noreferrer noopener">
-              <ExternalLink />
-              Escalate at TakeItDown.ftc.gov
-            </a>
-          )}
-          <details>
-            <summary>Complaint packet to paste into the FTC form</summary>
-            <pre className="notice-text">{s.ftc_packet}</pre>
-          </details>
+          <div className="form-guide-head">
+            {onFile && s.ftc_url ? (
+              <button className="btn btn-primary" type="button" onClick={() => onFile(s)}>
+                <ExternalLink />
+                File with the FTC
+              </button>
+            ) : s.ftc_url ? (
+              <a className="btn btn-outline" href={s.ftc_url} target="_blank" rel="noreferrer noopener">
+                <ExternalLink />
+                Escalate at TakeItDown.ftc.gov
+              </a>
+            ) : null}
+          </div>
+          {steps.length > 0 && <FtcGuide steps={steps} />}
         </div>
       )}
     </div>
+  );
+}
+
+function FtcGuide({ steps }: { steps: FtcField[] }) {
+  return (
+    <div className="form-steps-grouped">
+      {groupFtc(steps).map((g) => (
+        <section key={g.screen || g.fields[0].index}>
+          {g.screen ? <h3 className="form-screen">{g.screen}</h3> : null}
+          <ol className="form-steps">
+            {g.fields.map(({ field: f, index }) => (
+              <li key={index}>
+                <span className="form-q">
+                  {f.question}
+                  {!f.required && <span className="hint"> (optional)</span>}
+                </span>
+                <div className="form-a">
+                  <span className={f.value.includes("\n") ? "fp-value clamp" : undefined}>{ftcAnswer(f)}</span>
+                  {ftcCopyable(f) && <CopyButton text={f.value} />}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function FtcFloatPanel({ s, formOpened }: { s: Settled; formOpened: boolean }) {
+  const steps = s.ftc_form?.length ? s.ftc_form : s.ftc_packet
+    ? [{ question: "Full complaint packet", required: false, type: "textarea", value: s.ftc_packet }]
+    : [];
+  const [done, setDone] = useState<number[]>([]);
+  return (
+    <>
+      <header className="fp-head">
+        <div className="fp-brand">
+          <span className="fp-kicker">Six Eyes · Report to the FTC</span>
+          <span className={`chip ${s.dry_run ? "chip-test" : "chip-done"}`}>{s.dry_run ? "Test" : "Live"}</span>
+        </div>
+        <h1 className="title">TakeItDown.ftc.gov</h1>
+        <p className={`fp-callout${s.dry_run ? " is-test" : ""}`}>
+          {s.dry_run
+            ? "Test mode: our test posts were shared with consent, so don’t submit this."
+            : "Follow each screen. Choose the option named here, or paste when the form asks for text. You don’t need to upload or describe the images."}
+        </p>
+      </header>
+      <main className="fp-body">
+        {groupFtc(steps).map((g) => (
+          <section key={g.screen || g.fields[0].index}>
+            {g.screen ? <h2 className="fp-screen">{g.screen}</h2> : null}
+            <ol className="fp-steps">
+              {g.fields.map(({ field: f, index: i }) => {
+                const isDone = done.includes(i);
+                return (
+                  <li key={i} className={`fp-step${isDone ? " done" : ""}`}>
+                    <span className="fp-num" aria-label={isDone ? "Copied" : `Step ${i + 1}`}>
+                      {isDone ? <Check /> : i + 1}
+                    </span>
+                    <span className="fp-q">
+                      {f.question}
+                      {!f.required && " (optional)"}
+                    </span>
+                    <div className="fp-a">
+                      <span className={`fp-value${f.value.includes("\n") ? " clamp" : ""}`}>{ftcAnswer(f)}</span>
+                      {ftcCopyable(f) && (
+                        <CopyButton text={f.value} onCopied={() => setDone((d) => [...new Set([...d, i])])} />
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ))}
+      </main>
+      <footer className="fp-foot">
+        <span className="fp-progress" role="status">
+          {(() => {
+            const copyable = steps.filter(ftcCopyable).length;
+            const n = done.filter((i) => ftcCopyable(steps[i])).length;
+            if (!copyable) return "Choose each option on the matching screen";
+            return n === copyable ? "All answers copied" : `${n} of ${copyable} copied`;
+          })()}
+        </span>
+        {ftcStartUrl(s.ftc_url) && (
+          <a className={`btn ${formOpened ? "btn-outline" : "btn-primary"}`} href={ftcStartUrl(s.ftc_url)!} target="_blank" rel="noreferrer noopener">
+            <ExternalLink />
+            {formOpened ? "Reopen the FTC form" : "Open the FTC form"}
+          </a>
+        )}
+      </footer>
+    </>
   );
 }
 
@@ -689,6 +815,30 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
   );
 }
 
+function ftcStartUrl(url: string | null) {
+  if (!url) return null;
+  const base = url.replace(/\/$/, "");
+  return base === "https://takeitdown.ftc.gov" ? `${base}/get-started` : url;
+}
+
+function ftcAnswer(f: FtcField) {
+  return f.type === "select" ? `Choose “${f.value}”` : f.value;
+}
+
+function ftcCopyable(f: FtcField) {
+  return f.type !== "select" && f.type !== "skip";
+}
+
+function groupFtc(steps: FtcField[]) {
+  const groups: { screen: string; fields: { field: FtcField; index: number }[] }[] = [];
+  steps.forEach((field, index) => {
+    const screen = field.screen ?? "";
+    if (!groups.length || groups[groups.length - 1].screen !== screen) groups.push({ screen, fields: [{ field, index }] });
+    else groups[groups.length - 1].fields.push({ field, index });
+  });
+  return groups;
+}
+
 function CopyButton({ text, onCopied }: { text: string; onCopied?: () => void }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -711,7 +861,7 @@ function CopyButton({ text, onCopied }: { text: string; onCopied?: () => void })
 
 // Each new window uses up the click that opened it, so the floating window opens on the first of the two presses
 // and the platform's form on the second. Both must be called during the click.
-function openFloat(): Promise<Window | null> | null {
+function openFloat(wait = "Press both buttons and your report appears here. This window stays on top of other windows."): Promise<Window | null> | null {
   const pip = (window as Window & { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture;
   if (!pip) return null;
   return pip.requestWindow({ width: 440, height: 680 }).then(
@@ -721,7 +871,7 @@ function openFloat(): Promise<Window | null> | null {
       for (const node of document.head.querySelectorAll('link[rel="stylesheet"], style'))
         win.document.head.append(node.cloneNode(true));
       win.document.title = "Six Eyes report";
-      floatMessage(win, "Press both buttons and your report appears here. This window stays on top of other windows.");
+      floatMessage(win, wait);
       return win;
     },
     () => null,

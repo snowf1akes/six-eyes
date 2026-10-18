@@ -67,13 +67,14 @@ must come from the briefing or a tool result.
 report for X is ready to submit, X must remove the posts within 48 hours of receiving it, and Six Eyes \
 will check back after the deadline. Then call wait_until. If it says the deadline has passed (or the \
 wait was skipped), call check_live; if a post is still up after the deadline, call escalate, then \
-notify_user again with https://takeitdown.ftc.gov as link when anything is still up. If wait_until \
+notify_user again with https://takeitdown.ftc.gov as link when anything is still up. Put that FTC URL \
+and the dashboard URL from the briefing in the text. If wait_until \
 says a new session will start later, stop after the first notify_user.
 - The removal deadline just passed: call check_live. If every post is gone, tell the user they were \
-removed. If a post is still up, call escalate, then notify_user the same way (FTC URL as link). \
+removed. If a post is still up, call escalate, then notify_user the same way (both URLs). \
 Don't call wait_until.
 - The team asked for a check: call check_live. If every post is gone, tell the user they were removed. If \
-a post is still up after the deadline, call escalate, then notify_user the same way (FTC URL as link). \
+a post is still up after the deadline, call escalate, then notify_user the same way (both URLs). \
 Before the deadline, never escalate, and only notify the user if something changed.
 - If a tool returns an error, retry it at most once. Tell the user about an error only if they need to act.
 
@@ -173,6 +174,8 @@ def briefing(run: Run) -> str:
         name = con.execute("SELECT name FROM users WHERE id = ?", (run.user_id,)).fetchone()[0]
     lines = [REASONS[run.reason], f"Now: {_now()}",
              f"Case {run.case_id}, for user {run.user_id} ({name}). Test mode: {'yes' if main.dry_run() else 'no'}.",
+             f"Dashboard: {main.dashboard_url(run.user_id)}",
+             f"FTC form: {channels.escalation()['ftc']}",
              "Posts in this case:"]
     for case_id, _, url, state, sent_at, due_at in _cluster(run):
         lines.append(f"- case {case_id}: {url}, {state}" + (f", notice made {sent_at}, due {due_at}" if due_at else ""))
@@ -216,8 +219,8 @@ def tools(run: Run) -> list:
         tool("escalate", "Escalate the case's posts that are still up after the deadline: prepares a "
                          "complaint for the FTC at TakeItDown.ftc.gov. Call check_live first.", esc),
         tool("notify_user", "Text the user a short, plain update about their case (Photon SMS). "
-                            "If they need to escalate to the FTC, pass link=https://takeitdown.ftc.gov and tell "
-                            "them to open that form; the team has the complaint packet.",
+                            "If they need to escalate to the FTC, pass link=https://takeitdown.ftc.gov and include "
+                            "that URL and the dashboard URL from the briefing in the text.",
              notify),
     ]
 
@@ -298,7 +301,7 @@ def escalate(run: Run, case_id: int) -> str:
     due = min(_as_utc(r[5]) for r in up)
     if datetime.now(timezone.utc) < due:
         raise ToolError(f"Not yet: X has until {due.isoformat()} to remove the posts.")
-    moved, _ = main.escalate([r[0] for r in up], "caseworker")
+    moved, *_ = main.escalate([r[0] for r in up], "caseworker")
     if not moved:
         raise ToolError("Already escalated.")
     return (f"Escalated {len({r[2] for r in up if r[0] in moved})} post(s) still up after the {due.isoformat()} "
@@ -312,6 +315,12 @@ def notify_user(run: Run, user_id: int, text: str, link: str = "") -> str:
     text = " ".join(text.split())
     if not text:
         raise ToolError("The message is empty.")
+    ftc = channels.escalation()["ftc"]
+    dash = main.dashboard_url(user_id)
+    if (link or "").rstrip("/") == ftc.rstrip("/") and dash not in text:
+        extra = f" FTC: {ftc}  Guide: {dash}"
+        if len(text) + 1 + len(extra) <= MAX_MESSAGE:
+            text = f"{text} {extra}"
     if len(text) > MAX_MESSAGE:
         raise ToolError(f"Keep the message under {MAX_MESSAGE} characters.")
     if run.messages >= MAX_MESSAGES:
@@ -368,14 +377,16 @@ def wait_settled(case_ids: list[int], timeout: float | None = None) -> dict | No
         if rows and all(state != "noticed" for _, state in rows):
             resolved = [i for i, state in rows if state == "resolved"]
             escalated = [i for i, state in rows if state == "escalated"]
-            packet, ftc = None, None
+            packet, ftc, form, dry = None, None, None, None
             if escalated:
                 with closing(main.db()) as con:
                     detail = con.execute("SELECT detail FROM events WHERE case_id = ? AND kind = 'escalated' "
                                          "ORDER BY rowid DESC", (escalated[0],)).fetchone()
                 body = json.loads(detail[0]) if detail else {}
                 packet, ftc = body.get("ftc_packet"), body.get("ftc_url") or channels.escalation()["ftc"]
-            return {"resolved": resolved, "escalated": escalated, "ftc_packet": packet, "ftc_url": ftc}
+                form, dry = body.get("ftc_form"), body.get("dry_run")
+            return {"resolved": resolved, "escalated": escalated, "ftc_packet": packet, "ftc_url": ftc,
+                    "ftc_form": form, "dry_run": dry}
         time.sleep(0.05)
     return None
 

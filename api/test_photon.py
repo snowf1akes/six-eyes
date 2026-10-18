@@ -20,7 +20,7 @@ assert photon.e164("") is None
 assert photon.send("6175550123", "hello") is None, "no Photon credentials: don't send"
 
 os.environ.update(PHOTON_API_KEY="pho_sk_test", PHOTON_PROJECT_ID="pho_prj_test",
-                  PHOTON_AGENT_USER_ID="pho_usr_agent")
+                  PHOTON_AGENT_USER_ID="pho_usr_agent", PHOTON_PLATFORM="sms")
 calls = []
 
 
@@ -47,5 +47,11 @@ assert calls[0][2] != calls[1][2]
 calls.clear()
 assert photon.send("+1 (617) 555-0123", "Follow-up.") == "pho_msg_1"
 assert [u.rsplit("/", 1)[-1] for u, *_ in calls] == ["messages"]
+
+os.environ["PHOTON_PLATFORM"] = "imessage"
+photon._THREADS.clear()
+calls.clear()
+assert photon.send("617-555-0123", "via iMessage.") == "pho_msg_1"
+assert calls[0][1]["platform"] == "imessage" and calls[1][1]["platform"] == "imessage"
 
 print("photon self-check passed")

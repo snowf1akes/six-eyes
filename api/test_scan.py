@@ -240,9 +240,17 @@ assert r.status_code == 200, r.text
 w = r.json()
 assert w["resolved"] == [case_10a] and w["escalated"] == [case_12, case_91], w
 assert w["ftc_url"] == "https://takeitdown.ftc.gov"
+form = w["ftc_form"]
+assert form[0]["type"] == "select" and "didn't take it" in form[0]["value"]
+assert any(f["value"] == "X" and "platform" in f["question"].lower() for f in form)
+assert any(f["value"] == "https://x.com/copycat/status/12" for f in form)
+assert any(f["value"] == "https://x.com/burner/status/91" for f in form)
+assert "takeitdown.ftc.gov" in form[-2]["value"]  # complaint packet, before the submit warning
 msg = client.get(f"/messages/{user_id}").json()["messages"][0]
 assert msg["link"] == "https://takeitdown.ftc.gov"
-assert texts == [("617-555-0123", msg["text"])] and "takeitdown.ftc.gov" in msg["text"]
+assert texts == [("617-555-0123", msg["text"])]
+assert "https://takeitdown.ftc.gov" in msg["text"]
+assert f"https://six-eyes-henna.vercel.app/dashboard?user={user_id}" in msg["text"]
 assert "48 hours" in msg["text"] and "FTC" in msg["text"] and "authorized representative" in msg["text"]
 listed = client.get(f"/cases/{user_id}").json()
 assert listed["escalations"] and listed["escalations"][0]["ftc_url"] == "https://takeitdown.ftc.gov"

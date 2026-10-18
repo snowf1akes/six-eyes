@@ -596,6 +596,11 @@ svg {
   gap: 16px;
   padding: 16px;
 }
+.fp-body > section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .fp-body summary {
   cursor: pointer;
 }
@@ -727,6 +732,20 @@ svg {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+.form-steps-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.form-screen,
+.fp-screen {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
 }
 .form-steps {
   display: flex;
