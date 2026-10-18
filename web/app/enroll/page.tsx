@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Metadata } from "next";
 import { EnrollForm } from "./enroll-form";
 
-export const metadata: Metadata = { title: "Enroll" };
+export const metadata: Metadata = { title: "Get started" };
 
 // C owns content/consent.md. Supports "## " headings, "- " lists and paragraphs.
 function Consent() {
@@ -34,7 +34,7 @@ export default function EnrollPage() {
     <main className="page">
       <div className="enroll">
         <div className="enroll-head">
-          <h1 className="page-title">Enroll</h1>
+          <h1 className="page-title">Get started</h1>
           <p className="lede">
             Give us a few selfies once. Six Eyes searches X for posts of you, shows you anything that
             looks like a deepfake, and files the takedown when you say so.

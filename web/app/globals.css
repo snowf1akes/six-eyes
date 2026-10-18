@@ -229,6 +229,69 @@ svg {
   font-size: 1rem;
 }
 
+/* Landing: the name sits in the eye of a graphite starfield (components/ui/starfield.tsx). */
+.landing {
+  position: relative;
+  isolation: isolate;
+  flex: 1;
+  display: grid;
+  place-items: center;
+  min-height: calc(100svh - 64px);
+  overflow: hidden;
+}
+.landing-sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+.landing-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  max-width: 32rem;
+  padding: 48px 24px;
+  text-align: center;
+  /* A clearing of desk behind the words, so stars never cross the text. */
+  background: radial-gradient(closest-side, var(--desk) 70%, rgb(250 248 245 / 0));
+}
+.landing-title {
+  margin: 0;
+  font-family: var(--font-display), serif;
+  font-size: clamp(3.5rem, 11vw, 7rem);
+  font-weight: 500;
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+}
+.landing-copy .lede {
+  margin: 0;
+}
+/* Warp to /enroll (components/ui/warp-tunnel.tsx): streaks fly out of the eye, then fade to the desk the
+   form sits on. 900ms in total, WARP_MS in app/page.tsx. */
+.warp {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--desk);
+  animation: warp-in 150ms ease-out;
+}
+.warp canvas {
+  animation: warp-out 900ms ease-in forwards;
+}
+@keyframes warp-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes warp-out {
+  70% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 /* Shimmer button (components/ui/shimmer-button.tsx): a light runs around the edge. */
 .shimmer-btn {
   position: relative;
