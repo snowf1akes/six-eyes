@@ -46,6 +46,13 @@ type Notice = {
   due_at: string;
   packets: Packet[];
 };
+type Settled = {
+  case_id: number;
+  resolved: number[];
+  escalated: number[];
+  ftc_packet: string | null;
+  ftc_url: string | null;
+};
 type Filing = {
   caseId: number;
   ids: number[];
@@ -53,6 +60,7 @@ type Filing = {
   error: string | null;
   formOpened?: boolean;
   floating?: boolean;
+  outcome?: Settled;
 };
 // Chrome and Edge only: a small window that stays on top of every other window, the platform's form included.
 type DocumentPictureInPicture = { requestWindow(options: { width: number; height: number }): Promise<Window> };
@@ -120,6 +128,7 @@ export function Cases() {
   const user = useSearchParams().get("user");
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [filings, setFilings] = useState<Filing[]>([]);
+  const [settled, setSettled] = useState<Settled[]>([]);
   const [floating, setFloating] = useState<Floating | null>(null);
   const [reload, setReload] = useState(0);
   const [filter, setFilter] = useState(0);
@@ -156,7 +165,10 @@ export function Cases() {
         if (!live) return;
         if (!res.ok)
           setLoad({ status: "error", message: typeof data.detail === "string" ? data.detail : "Couldn't load your found posts." });
-        else setLoad({ status: "ready", cases: data.cases });
+        else {
+          setLoad({ status: "ready", cases: data.cases });
+          setSettled(data.settled ?? []);
+        }
       })
       .catch(() => live && setLoad({ status: "error", message: "Can't reach the Six Eyes server. Check that the API is running, then reload." }));
     return () => {
@@ -181,6 +193,9 @@ export function Cases() {
       {floating && floated?.notice && createPortal(<FloatPanel notice={floated.notice} formOpened={!!floated.formOpened} />, floating.root)}
       {filings.map((f) => (
         <FilingNote key={f.caseId} filing={f} onRetried={onRetried} />
+      ))}
+      {settled.map((s) => (
+        <SettledNote key={s.case_id} s={s} />
       ))}
       <Scan user={user} onProgress={refresh} />
       {load.cases.length ? (
@@ -395,7 +410,8 @@ const when = (iso: string) =>
 
 function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Filing) => void }) {
   const [busy, setBusy] = useState(false);
-  const { notice: n, error, ids } = filing;
+  const [skipError, setSkipError] = useState<string | null>(null);
+  const { notice: n, error, ids, outcome } = filing;
   const posts = `${ids.length} ${ids.length === 1 ? "post" : "posts"}`;
 
   async function retry() {
@@ -407,6 +423,21 @@ function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Fili
       onRetried({ ...filing, notice: data, error: null });
     } catch (e) {
       onRetried({ ...filing, error: e instanceof TypeError ? "Can't reach the Six Eyes server." : (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function skipWait() {
+    setBusy(true);
+    setSkipError(null);
+    try {
+      const res = await fetch(`${API}/timewarp/${filing.caseId}`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Couldn't skip the wait.");
+      onRetried({ ...filing, outcome: data });
+    } catch (e) {
+      setSkipError(e instanceof TypeError ? "Can't reach the Six Eyes server." : (e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -445,6 +476,54 @@ function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Fili
       {n.packets.map((p) => (
         <FormGuide key={p.reported_username} packet={p} formUrl={n.form_url} platform={n.platform} />
       ))}
+      {outcome ? (
+        <div className="note-more">
+          <SettledNote s={outcome} />
+        </div>
+      ) : n.dry_run ? (
+        <div className="note-more actions">
+          <button className="btn btn-outline" type="button" disabled={busy} onClick={skipWait}>
+            {busy ? "Checking X…" : "Skip the 48-hour wait (test)"}
+          </button>
+          {skipError && <p className="error" role="alert">{skipError}</p>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SettledNote({ s }: { s: Settled }) {
+  const gone = s.resolved.length;
+  const up = s.escalated.length;
+  const posts = (n: number) => `${n} ${n === 1 ? "post" : "posts"}`;
+  const title = up
+    ? gone
+      ? `${posts(gone)} taken down, ${posts(up)} still up`
+      : `${posts(up)} still up after 48 hours`
+    : `${posts(gone)} taken down`;
+  return (
+    <div className="note" role="status">
+      {up ? <CircleAlert /> : <CircleCheck />}
+      <span className="note-title">{title}</span>
+      <p>
+        {up
+          ? "X did not remove the remaining posts within 48 hours. The next step is a complaint to the Federal Trade Commission (it enforces the TAKE IT DOWN Act). Open the FTC form, then paste the packet below. You don’t need to describe the images. The team can file this as your authorized representative."
+          : "X removed the reported posts. Nothing else to do."}
+      </p>
+      {s.ftc_packet && (
+        <div className="note-more">
+          {s.ftc_url && (
+            <a className="btn btn-outline" href={s.ftc_url} target="_blank" rel="noreferrer noopener">
+              <ExternalLink />
+              Escalate at TakeItDown.ftc.gov
+            </a>
+          )}
+          <details>
+            <summary>Complaint packet to paste into the FTC form</summary>
+            <pre className="notice-text">{s.ftc_packet}</pre>
+          </details>
+        </div>
+      )}
     </div>
   );
 }

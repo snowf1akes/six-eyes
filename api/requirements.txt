@@ -14,5 +14,6 @@ pillow
 diffusers
 lpips
 c2pa-python
+droid-sdk[mcp]  # the case worker (caseworker.py); also needs the droid CLI
 # Must match the version that pickled data/models/*.joblib (ml/heads.py), or the heads may not load.
 scikit-learn==1.9.1

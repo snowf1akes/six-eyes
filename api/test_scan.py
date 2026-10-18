@@ -12,13 +12,14 @@ from datetime import datetime, timedelta
 
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ.update(DRY_RUN="1", NOTICE_TEST_TO="me@test.example", SIGNER_NAME="Raymond Wang",
-                  CONTACT_EMAIL="reports@test.example")
+                  CONTACT_EMAIL="reports@test.example", CASEWORKER="0")  # test_caseworker.py covers it
 
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import analyze  # noqa: E402
 import channels  # noqa: E402
+import photon  # noqa: E402
 import x  # noqa: E402
 from main import DB_PATH, app  # noqa: E402
 
@@ -210,6 +211,78 @@ del os.environ["SIGNER_NAME"]  # no named signer: refused rather than signed by 
 r = client.post(f"/cases/{by_post['13']['id']}/confirm", json=both).json()
 assert r["notice"] is None and r["notice_error"].startswith("Set SIGNER_NAME"), r
 os.environ["SIGNER_NAME"] = "Raymond Wang"
+
+
+def state_of(case_id):
+    return con.execute("SELECT state FROM cases WHERE id = ?", (case_id,)).fetchone()[0]
+
+
+# Recheck: loading the dashboard settles noticed cases past their deadline, and nothing before it.
+live_calls = []
+x.is_live = lambda post_id: live_calls.append(post_id) or post_id != "10"  # post 10 was taken down
+client.get(f"/cases/{user_id}")
+assert live_calls == [], "nothing is due yet, so X isn't asked"
+
+# Time-warp (test mode only) ends case 91's 48 hours now and rechecks its cluster: post 10's image a is gone,
+# so it's resolved; posts 12 and 91 are still up, so they're escalated with the FTC packet, and the user is texted.
+con.execute("UPDATE users SET phone = ? WHERE id = ?", ("617-555-0123", user_id))
+con.commit()
+texts = []
+photon.send = lambda phone, text: texts.append((phone, text)) or "pho_msg_1"
+case_10a, case_12 = rows[0][0], clone[0]
+assert client.post("/timewarp/999").status_code == 404
+assert client.post(f"/timewarp/{by_post['13']['id']}").status_code == 409, "confirmed, not noticed"
+os.environ["DRY_RUN"] = "0"
+assert client.post(f"/timewarp/{case_91}").status_code == 403
+os.environ["DRY_RUN"] = "1"
+r = client.post(f"/timewarp/{case_91}")
+assert r.status_code == 200, r.text
+w = r.json()
+assert w["resolved"] == [case_10a] and w["escalated"] == [case_12, case_91], w
+assert w["ftc_url"] == "https://takeitdown.ftc.gov"
+msg = client.get(f"/messages/{user_id}").json()["messages"][0]
+assert msg["link"] == "https://takeitdown.ftc.gov"
+assert texts == [("617-555-0123", msg["text"])] and "takeitdown.ftc.gov" in msg["text"]
+assert "48 hours" in msg["text"] and "FTC" in msg["text"] and "authorized representative" in msg["text"]
+listed = client.get(f"/cases/{user_id}").json()
+assert listed["escalations"] and listed["escalations"][0]["ftc_url"] == "https://takeitdown.ftc.gov"
+assert sorted(live_calls) == ["10", "12", "91"], "one X check per post"
+assert [state_of(i) for i in (case_10a, case_12, case_91, image_b)] == ["resolved", "escalated", "escalated", "noticed"]
+packet = w["ftc_packet"]
+assert "File at: https://takeitdown.ftc.gov" in packet and "{" not in packet, packet
+assert packet.count(f"Case reference: {case_91}") == 3, "the packet and both notice copies agree"
+assert f"- https://x.com/copycat/status/12 (posted by @copycat), image PDQ hash {NEAR_ZERO}" in packet
+assert f"- https://x.com/burner/status/91 (posted by @burner), image PDQ hash {ZERO}" in packet
+assert "Posts from the same request that X did remove: https://x.com/burner/status/10" in packet
+assert "https://x.com/copycat/status/12: face match 20%" in packet and "altered 90% (face swap)" in packet
+for step in ("Found on X by Six Eyes", "Sunny Le confirmed it depicts them", "TAKE IT DOWN removal request made to X",
+             "Test only: the 48-hour deadline was moved to now", "Removed from X: https://x.com/burner/status/10"):
+    assert step in packet, step
+assert "Account that published the content: @burner" in packet and "@copycat" in packet, "both notices copied"
+assert "Raymond Wang, authorized representative of Sunny Le" in packet
+escalated = con.execute("SELECT case_id, detail FROM events WHERE kind = 'escalated' ORDER BY case_id").fetchall()
+assert [i for i, _ in escalated] == [case_12, case_91]
+assert json.loads(escalated[0][1])["ftc_packet"] == packet and json.loads(escalated[0][1])["still_up"] == [
+    "https://x.com/burner/status/91", "https://x.com/copycat/status/12"]
+assert client.post(f"/timewarp/{case_91}").status_code == 409, "already settled"
+
+# Past the deadline for real (image b, the live notice): the next dashboard load settles it.
+con.execute("UPDATE cases SET due_at = '2026-01-01T00:00:00+00:00' WHERE id = ?", (image_b,))
+con.commit()
+live_calls.clear()
+r = client.get(f"/cases/{user_id}")
+assert r.status_code == 200 and r.json()["settled"][0]["resolved"] == [image_b], r.text
+assert live_calls == ["10"] and state_of(image_b) == "resolved"
+
+# X can't be checked: the dashboard still loads, the case waits, and the time-warp says why.
+case_13 = by_post["13"]["id"]
+assert client.post(f"/cases/{case_13}/notice").status_code == 200
+x.is_live = raises(RuntimeError("X_BEARER_TOKEN is not set."))
+assert client.post(f"/timewarp/{case_13}").status_code == 503
+assert client.get(f"/cases/{user_id}").status_code == 200 and state_of(case_13) == "noticed"
+x.is_live = lambda post_id: True
+assert client.post("/recheck").json()["settled"][0]["escalated"] == [case_13]
+assert state_of(case_13) == "escalated"
 
 
 
