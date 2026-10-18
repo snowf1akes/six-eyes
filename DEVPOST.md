@@ -135,7 +135,6 @@ LoRA looked best on paper, but on the held-out teammate it collapsed, flagging 9
 
 - **More platforms:** each one is one connector plus one channel entry (Instagram, Bluesky, Reddit, TikTok, Snap are already mapped in `channels.json`).
 - **A better Grok-era detector:** more generators in training, and through-X compression tests.
-- **Sandboxed analysis per post** (e.g. in Daytona), so raw media never touches our servers.
 - **StopNCII integration**, so blocked images can't be re-uploaded.
 - **Minor safety:** routing anyone under 18 to NCMEC's Take It Down.
 
@@ -149,7 +148,6 @@ LoRA looked best on paper, but on the held-out teammate it collapsed, flagging 9
 - **Factory:** the Droid case worker owns each case from notice to resolution or escalation, with five guarded tools over MCP.
 - **Photon:** SMS updates to the user on every case change.
 - **SpaceXAI:** we used **Grok Imagine** to build our out-of-distribution test set: 49 consented edits the model never saw.
-- [**Daytona:** only tick this if A confirms Daytona is actually used. The repo currently runs analysis on Modal.]
 
 ## Try it out
 

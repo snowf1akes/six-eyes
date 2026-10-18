@@ -1,7 +1,7 @@
 """Contract between Builder A (detection) and Builder B (product).
 
 B calls analyze(); A replaces the placeholder body with the real pipeline (task A6).
-Inside a Daytona sandbox it runs as:
+From the command line:
     python analyze.py <media_url> '<embedding json>'   -> prints AnalyzeResult as JSON
 """
 import io

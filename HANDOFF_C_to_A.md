@@ -10,7 +10,7 @@ Status as of Sat Oct 17, ~4:15 PM. From C (Raymond).
   - Location (GPS) metadata is **still in the files**. We decided to leave it, so don't publish the originals.
   - There are no photos of Raymond, so the test set has 2 people.
 - **X test accounts:** 2 accounts created with X Premium. Logins are in the password manager.
-- **Booth answers:** **still pending** (Daytona, Photon, SpaceXAI). See "Open items".
+- **Booth answers:** **still pending** (Photon, SpaceXAI). See "Open items".
 
 ### C2: Test data (in progress)
 - **Grok edits:** being made **by hand in the Grok app** (Premium account), not with `ml/gen_testset.py`, because we have no `XAI_API_KEY` yet.
@@ -48,7 +48,7 @@ Edited photos (25 per person, spread across the 50 shots):
 - `data/` is gitignored, so none of this is in the repo. See "How you get the files" below.
 
 ## Open items / questions for A
-1. **Booth answers:** still waiting on Daytona (GPU quota; can sandboxes reach `pbs.twimg.com` / `video.twimg.com`?), Photon (can 2.0 receive photos?) and SpaceXAI (Grok API credits).
+1. **Booth answers:** still waiting on Photon (can 2.0 receive photos?) and SpaceXAI (Grok API credits).
 2. **Is 2 people enough** for the test set, or do you want a third person photographed?
 3. **xAI API key:** if one turns up, should C switch to `gen_testset.py` for the remaining edits?
 4. **FaceFusion:** about 20–30 swaps between Sean and Sunny. Is that enough?
