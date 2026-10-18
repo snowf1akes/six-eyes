@@ -1,7 +1,8 @@
 """Task A3, step 2: logistic-regression probes on frozen features (the UnivFD baseline).
 
 One image = its face features and full-view features side by side. Each backbone gets two heads:
-binary real/fake, and multi-class [real, swap, inpaint, txt2img, vae-decoded] that names the generator.
+binary real/fake, and multi-class over the generators in the train split that names the generator
+(real, swap, inpaint, txt2img, vae-decoded, and grok once ml/testset.py --train-person puts some in training).
 Trains on split=train, reports every split, saves the heads to data/models/<backbone>_<head>.joblib.
 Run from the repo root after ml/features.py:
     python ml/heads.py
@@ -21,7 +22,7 @@ MANIFEST = Path("data/manifest.csv")
 FEATURES = Path("data/features")
 MODELS = Path("data/models")
 BACKBONES = ["clip", "dinov3"]
-CLASSES = ["real", "swap", "inpaint", "txt2img", "vae-decoded"]
+CLASSES = ["real", "swap", "inpaint", "txt2img", "vae-decoded", "grok"]
 C_GRID = [0.001, 0.01, 0.1, 1.0, 10.0]  # regularization strengths tried; the best on val wins
 
 
@@ -55,7 +56,7 @@ def report(backbone, binary, multi, X, gen, split):
             continue
         fake = gen[m] != "real"
         p = binary.predict_proba(X[m])[:, 1]
-        known = np.isin(gen[m], CLASSES)
+        known = np.isin(gen[m], multi.classes_)
         acc = (multi.predict(X[m][known]) == gen[m][known]).mean() if known.any() else float("nan")
         print(f"{backbone:<7} {s:<5} {m.sum():>6} {roc_auc_score(fake, p):>6.3f} {average_precision_score(fake, p):>6.3f}"
               f" {(p[~fake] >= 0.5).mean():>8.3f} {(p[fake] >= 0.5).mean():>9.3f} {acc:>9.3f}")
@@ -74,7 +75,7 @@ def main():
         fits = {c: probe(c).fit(X[tr], gen[tr] != "real") for c in C_GRID}
         c = max(fits, key=lambda c: roc_auc_score(gen[va] != "real", fits[c].predict_proba(X[va])[:, 1]))
         binary, multi = fits[c], probe(c).fit(X[tr], gen[tr])
-        assert list(multi.classes_) == sorted(CLASSES), multi.classes_
+        assert set(multi.classes_) <= set(CLASSES), multi.classes_
         joblib.dump(binary, MODELS / f"{backbone}_binary.joblib")
         joblib.dump(multi, MODELS / f"{backbone}_multi.joblib")
         report(f"{backbone}", binary, multi, X, gen, split)

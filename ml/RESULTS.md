@@ -38,6 +38,30 @@ Logistic-regression probes on frozen backbone features (UnivFD-style), one image
 - Generator accuracy is over the five training classes, so it is left out for test, where the fakes are Grok.
 - Regularization picked on val: CLIP C=10, DINOv3 C=0.01.
 
+## Task 4: Grok in training, other person held out
+
+`python ml/testset.py --train-person sunny`: Sunny's 50 real photos and 25 Grok edits join training (Grok
+becomes a sixth class); Sean's 49 real photos and 24 Grok edits are the test. Sean is held out because he is
+the enrolled teammate in the dashboard runs. Both rows are on the same 73 Sean images, so they compare
+directly with the Grok-unseen rows above, which mix both teammates.
+
+| Model | Grok in training | AUC | AP | FPR @ 0.5 | Recall @ 0.5 |
+|---|---|---:|---:|---:|---:|
+| CLIP probe | no | 0.429 | 0.295 | 0.388 | 0.417 |
+| CLIP probe | Sunny's 25 | 0.548 | 0.374 | 0.347 | 0.542 |
+| DINOv3 probe | no | 0.662 | 0.527 | 0.020 | 0.083 |
+| DINOv3 probe | Sunny's 25 | **0.686** | 0.556 | 0.020 | 0.083 |
+| DINOv3 + LoRA | no | 0.695 | — | — | — |
+
+- A linear probe on frozen features learns little about Grok from 25 images of another person: DINOv3 moves
+  from 0.662 to 0.686, CLIP from 0.429 to 0.548. The same held when training on Sean and testing on Sunny
+  (DINOv3 0.55; CLIP about 0.6), at every regularization strength tried, and with each generator weighted
+  equally instead of each class. Grok redraws the whole image, so like
+  the vae-decoded class its trace is low-level, which frozen features barely capture.
+- The LoRA model trained without Grok scores 0.613 on all 49 Grok edits (Sean 0.695, Sunny 0.539).
+  The retrain with Sunny's Grok edits in training is the next row.
+- Val stays put (DINOv3 0.887, CLIP 0.903), so adding Grok costs nothing on DeepFakeFace.
+
 ## LoRA fine-tune of DINOv3 (`ml/finetune.py`)
 
 LoRA r=16 on the last 8 blocks, both views through the backbone, 3 epochs at batch 32 (~7 min per epoch on
