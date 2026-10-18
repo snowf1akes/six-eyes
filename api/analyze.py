@@ -24,7 +24,7 @@ import recon
 PDQ_MIN_QUALITY = 50  # PDQ's own cutoff: below it (flat or blank images) hashes match too easily
 DINO = "facebook/dinov3-vitl16-pretrain-lvd1689m"
 NSFW = "Falconsai/nsfw_image_detection"
-FAKE_THRESHOLD = 0.5  # ponytail: placeholder cutoff; the A4 eval picks the one with 95% precision on val
+FAKE_THRESHOLD = 0.742  # lowest fake_prob with 95% precision on val for the shipped probe (ml/eval.py, RESULTS.md)
 # Below this face_sim the face isn't the user's ("Unlikely to be you" on the dashboard), so its deepfake
 # and NSFW scores can't change the case; skipping them keeps a scan inside Modal's 150 s web request limit.
 SCORE_MIN_FACE_SIM = 0.3

@@ -52,6 +52,7 @@ directly with the Grok-unseen rows above, which mix both teammates.
 | DINOv3 probe | no | 0.662 | 0.527 | 0.020 | 0.083 |
 | DINOv3 probe | Sunny's 25 | **0.686** | 0.556 | 0.020 | 0.083 |
 | DINOv3 + LoRA | no | 0.695 | — | — | — |
+| DINOv3 + LoRA | Sunny's 25 | 0.514 | 0.338 | 0.918 | 0.917 |
 
 - A linear probe on frozen features learns little about Grok from 25 images of another person: DINOv3 moves
   from 0.662 to 0.686, CLIP from 0.429 to 0.548. The same held when training on Sean and testing on Sunny
@@ -59,7 +60,36 @@ directly with the Grok-unseen rows above, which mix both teammates.
   equally instead of each class. Grok redraws the whole image, so like
   the vae-decoded class its trace is low-level, which frozen features barely capture.
 - The LoRA model trained without Grok scores 0.613 on all 49 Grok edits (Sean 0.695, Sunny 0.539).
-  The retrain with Sunny's Grok edits in training is the next row.
+- Retrained with Sunny's Grok edits (val AUC 0.929, its best), LoRA overfits to the team's photos: it calls
+  92% of Sean's Grok edits fake but also 92% of his real photos (AUC 0.514). With one person's 25 Grok images
+  and the Grok class weighted ~130x, it learned "a teammate's phone photo" rather than Grok's trace.
+
+## Task 5: one table, and what ships (`ml/eval.py`)
+
+Held out: Sean (49 real photos, 24 Grok edits); Sunny's team images are in training. Threshold = the lowest
+fake_prob with at least 95% precision on DeepFakeFace val; the last three columns are at that threshold, on
+Sean's images. "False flags at 1% fakes" = share of flagged posts that are real when 1 post in 100 is fake.
+FaceFusion was skipped and the through-X copies aren't in yet, so those columns are absent.
+
+| Model | Val AUC | Val AP | Held-out Grok AUC | Threshold | Val recall | Held-out Grok caught | Held-out real flagged | False flags at 1% fakes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| CLIP probe | 0.903 | 0.940 | 0.429 | 0.698 | 74% | 12% | 20% | 99% |
+| DINOv3 probe | 0.887 | 0.925 | 0.662 | 0.746 | 65% | 4% | 0% | 0% |
+| **DINOv3 + Grok** (ships) | 0.887 | 0.925 | **0.686** | **0.742** | 65% | 4% | **0%** | 0% |
+| DINOv3 + LoRA (with Grok) | **0.929** | **0.957** | 0.514 | 0.764 | 79% | 92% | 92% | 99% |
+| Reconstruction (SD1.5 VAE) | 0.796 | 0.846 | 0.228 | 0.078 dist. | 27% | 12% | 39% | 100% |
+
+**Decision (the plan's rule: LoRA ships only if it beats DINOv3 + Grok on val and on the held-out teammate's
+Grok edits).** LoRA wins val but loses held-out Grok (0.514 vs 0.686), so the DINOv3 + Grok probe ships with
+threshold 0.742 and LoRA stays a row here.
+
+- At that threshold the shipped probe flags none of Sean's 49 real photos, but catches only 1 of his 24 Grok
+  edits: it is precise and misses most Grok. Every detector here trades one for the other on Grok.
+- The reconstruction score works on DeepFakeFace (val 0.80) and not on phone photos or Grok; it is evidence
+  for open-source SD-family images only.
+- Pitch framing: the detector is one evidence line next to identity match, C2PA, reconstruction, post text
+  and clone spread, and the user's confirmation decides. Grok-made fakes of an unseen person remain the open
+  problem, as the 2026 literature reports for closed generators.
 - Val stays put (DINOv3 0.887, CLIP 0.903), so adding Grok costs nothing on DeepFakeFace.
 
 ## LoRA fine-tune of DINOv3 (`ml/finetune.py`)

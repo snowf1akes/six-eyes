@@ -27,7 +27,7 @@ C_GRID = [0.001, 0.01, 0.1, 1.0, 10.0]  # regularization strengths tried; the be
 
 
 def images(feats):
-    """(X, generator, split) with one row per image: face and full features concatenated."""
+    """(X, generator, split, face path) with one row per image: face and full features concatenated."""
     with MANIFEST.open() as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == len(feats), "features don't match the manifest: re-run ml/features.py"
@@ -40,9 +40,11 @@ def images(feats):
     for r, x in zip(rows, feats):
         image = (r["generator"], Path(r["path"]).name, r["split"])  # the same image's two views share this
         views[image][r["view"]] = x
+        views[image][r["view"] + "_path"] = r["path"]
     keys = list(views)
     X = np.stack([np.concatenate([views[k]["face"], views[k]["full"]]) for k in keys])
-    return X, np.array([k[0] for k in keys]), np.array([k[2] for k in keys])
+    return (X, np.array([k[0] for k in keys]), np.array([k[2] for k in keys]),
+            np.array([views[k]["face_path"] for k in keys]))
 
 
 def probe(c):
@@ -70,7 +72,7 @@ def main():
     MODELS.mkdir(parents=True, exist_ok=True)
     print(f"{'model':<7} {'split':<5} {'images':>6} {'AUC':>6} {'AP':>6} {'FPR@0.5':>8} {'recall@.5':>9} {'gen acc':>9}")
     for backbone in BACKBONES:
-        X, gen, split = images(np.load(FEATURES / f"{backbone}.npy"))
+        X, gen, split, _ = images(np.load(FEATURES / f"{backbone}.npy"))
         tr, va = split == "train", split == "val"
         fits = {c: probe(c).fit(X[tr], gen[tr] != "real") for c in C_GRID}
         c = max(fits, key=lambda c: roc_auc_score(gen[va] != "real", fits[c].predict_proba(X[va])[:, 1]))
