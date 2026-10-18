@@ -167,27 +167,28 @@ r = client.post(f"/cases/{case_91}/notice")
 assert r.status_code == 200, r.text
 n = r.json()
 assert n["dry_run"] and not n["intimate"] and n["delivered_to"] == "me@test.example" and n["platform"] == "X"
-assert set(n["case_ids"]) == cluster and n["form_url"].endswith("/take-it-down/authorized-rep")
+assert set(n["case_ids"]) == cluster and n["form_url"].endswith("/take-it-down")
 packets = {p["reported_username"]: p for p in n["packets"]}
 assert set(packets) == {"burner", "copycat"}, packets.keys()
 assert packets["burner"]["content_urls"] == ["https://x.com/burner/status/10", "https://x.com/burner/status/91"]
 assert packets["copycat"]["content_urls"] == ["https://x.com/copycat/status/12"]
 text = packets["burner"]["notice"]
-assert "Account that published the content: @burner" in text and "/s/ Raymond Wang" in text
-assert "Authorized representative of Sunny Le" in text and "reports@test.example" in text
+assert "Account that published the content: @burner" in text and "/s/ Sunny Le" in text
+assert "identifiable individual depicted" in text and "reports@test.example" not in text
 assert "digital forgery" in text and "{" not in text, text  # fake_prob 0.9; every placeholder filled
 form = {f["question"]: f["value"] for f in packets["burner"]["form"]}
 assert form["Username of the account you are reporting"] == "burner"
-assert form["Your email address"] == "reports@test.example"
+assert "email you check" in form["Your email address"]
+assert "Sunny Le" in form["Signature"]
 details = form["Please provide more details about what's happening"]  # the short details.md, not the notice
-assert details.startswith("I am the authorized representative of Sunny Le") and "digital forgery" in details
+assert details.startswith("I am Sunny Le") and "digital forgery" in details
 assert details.endswith(f"Case reference: {case_91}.") and len(details) < 600 and "{" not in details, details
 assert [b["check"] for b in packets["burner"]["checkboxes"]] == [False, True, True]
 assert [f["type"] for f in packets["burner"]["form"] if f["preset"]] == ["select", "select"]  # the link picks both
 [(to, subject, body, reply_to)] = sent
 assert to == "me@test.example" and subject == "[Six Eyes test] 2 TAKE IT DOWN reports for X"
-assert body.startswith("TEST ONLY") and "Report @copycat on X" in body and reply_to == "reports@test.example"
-assert "authorized-rep" in body and "the form link already picks this" in body
+assert body.startswith("TEST ONLY") and "Report @copycat on X" in body and reply_to is None
+assert "take-it-down" in body and "authorized-rep" not in body and "the form link already picks this" in body
 noticed = con.execute("SELECT state, sent_at, due_at FROM cases WHERE id IN (%s)" % ",".join(map(str, cluster))).fetchall()
 assert {s for s, _, _ in noticed} == {"noticed"}
 assert datetime.fromisoformat(noticed[0][2]) - datetime.fromisoformat(noticed[0][1]) == timedelta(hours=48)
@@ -207,10 +208,6 @@ r = client.post(f"/cases/{image_b}/notice")
 assert r.status_code == 200 and r.json()["intimate"] and r.json()["delivered_to"] is None, r.text
 assert sent == [], "nothing is emailed live; X's form is filed by a person"
 os.environ["DRY_RUN"] = "1"
-del os.environ["SIGNER_NAME"]  # no named signer: refused rather than signed by nobody
-r = client.post(f"/cases/{by_post['13']['id']}/confirm", json=both).json()
-assert r["notice"] is None and r["notice_error"].startswith("Set SIGNER_NAME"), r
-os.environ["SIGNER_NAME"] = "Raymond Wang"
 
 
 def state_of(case_id):
@@ -251,7 +248,7 @@ assert msg["link"] == "https://takeitdown.ftc.gov"
 assert texts == [("617-555-0123", msg["text"])]
 assert "https://takeitdown.ftc.gov" in msg["text"]
 assert f"https://six-eyes-henna.vercel.app/dashboard?user={user_id}" in msg["text"]
-assert "48 hours" in msg["text"] and "FTC" in msg["text"] and "authorized representative" in msg["text"]
+assert "48 hours" in msg["text"] and "FTC" in msg["text"] and "your own name" in msg["text"]
 listed = client.get(f"/cases/{user_id}").json()
 assert listed["escalations"] and listed["escalations"][0]["ftc_url"] == "https://takeitdown.ftc.gov"
 assert sorted(live_calls) == ["10", "12", "91"], "one X check per post"
@@ -267,7 +264,7 @@ for step in ("Found on X by Six Eyes", "Sunny Le confirmed it depicts them", "TA
              "Test only: the 48-hour deadline was moved to now", "Removed from X: https://x.com/burner/status/10"):
     assert step in packet, step
 assert "Account that published the content: @burner" in packet and "@copycat" in packet, "both notices copied"
-assert "Raymond Wang, authorized representative of Sunny Le" in packet
+assert "Sunny Le, the person depicted" in packet
 escalated = con.execute("SELECT case_id, detail FROM events WHERE kind = 'escalated' ORDER BY case_id").fetchall()
 assert [i for i, _ in escalated] == [case_12, case_91]
 assert json.loads(escalated[0][1])["ftc_packet"] == packet and json.loads(escalated[0][1])["still_up"] == [
@@ -284,7 +281,8 @@ assert live_calls == ["10"] and state_of(image_b) == "resolved"
 
 # X can't be checked: the dashboard still loads, the case waits, and the time-warp says why.
 case_13 = by_post["13"]["id"]
-assert client.post(f"/cases/{case_13}/notice").status_code == 200
+assert client.post(f"/cases/{case_13}/confirm", json=both).status_code == 200
+assert state_of(case_13) == "noticed"
 x.is_live = raises(RuntimeError("X_BEARER_TOKEN is not set."))
 assert client.post(f"/timewarp/{case_13}").status_code == 503
 assert client.get(f"/cases/{user_id}").status_code == 200 and state_of(case_13) == "noticed"

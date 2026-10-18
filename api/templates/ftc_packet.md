@@ -12,8 +12,7 @@ Before filing: confirm the removal request was submitted on {platform_name}'s fo
 
 2. Who is reporting
 
-{signer_name}, authorized representative of {user_name}, the person depicted. {user_name} authorized the representative in writing on {authorization_date}.
-Contact: {contact_email}
+{user_name}, the person depicted, is filing this report for themselves. They type their own name and email on the FTC form.
 
 3. What the platform failed to do
 

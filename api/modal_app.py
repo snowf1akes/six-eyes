@@ -41,7 +41,9 @@ image = (
     # Bake the face, DINOv3, NSFW, VAE and LPIPS weights into the image; the token is only needed for this step.
     .run_function(fetch_models, secrets=[modal.Secret.from_name("huggingface")])
     .env({"DB_PATH": "/data/six_eyes.db", "MODELS_DIR": "/root/models", "HF_HUB_OFFLINE": "1",
-          "DROID_PATH": "/root/.local/bin/droid"})
+          "DROID_PATH": "/root/.local/bin/droid",
+          "PHOTON_PLATFORM": "imessage",
+          "APP_URL": "https://six-eyes-henna.vercel.app"})
     .add_local_python_source("main", "x", "signals", "analyze", "face", "crops", "recon", "channels",
                             "caseworker", "photon")
     .add_local_file(Path(__file__).with_name("data") / "keywords.json", "/root/data/keywords.json")

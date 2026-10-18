@@ -1,8 +1,8 @@
 """Takedown channels (data/channels.json), the TAKE IT DOWN notice (templates/notice.md), and email.
 
 C owns both files; templates/NOTES.md maps every placeholder and lists the legal rules that
-TakedownNotice and main.notice() enforce. Six Eyes files as the user's authorized representative:
-a named team member signs (SIGNER_NAME) and replies go to the team's reporting inbox (CONTACT_EMAIL).
+TakedownNotice and main.notice() enforce. The depicted person files in their own name: they type
+their email and signature on the live form. Six Eyes fills the post URLs and case facts.
 
 Email settings come from the environment: SMTP_HOST, SMTP_PORT (587 STARTTLS, 465 SSL), SMTP_USER,
 SMTP_PASSWORD and NOTICE_FROM (defaults to SMTP_USER).
@@ -63,9 +63,9 @@ class TakedownNotice(BaseModel):
     reported_username: str = Field(pattern=r"^\w{1,15}$")  # the posting account, without "@"
     content_urls: list[str] = Field(min_length=1)  # every post by that account in the clone cluster
     depiction_kind: Literal[FORGERY, INTIMATE]
-    signer_name: str = Field(min_length=1)     # signature: a real person who stands behind the statement
+    signer_name: str = Field(min_length=1)     # the depicted person's enrolled name; they sign the live form
     signer_relationship: str = Field(min_length=1)
-    contact_email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    contact_email: str = ""                    # they type their email on the platform form; we don't store it
     non_consent_confirmed: Literal[True]      # the user pressed "This is me" and "Not consensual"
 
     @field_validator("content_urls")

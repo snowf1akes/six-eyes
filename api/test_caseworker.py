@@ -93,7 +93,8 @@ assert caseworker.notify_user(run, user, "Test:  your report\nis ready.").starts
 assert caseworker.notify_user(run, user, "Second update.").startswith("Sent")
 fails(caseworker.notify_user, run, user, "Third.", match="already has")
 r = client.get(f"/messages/{user}").json()["messages"]
-assert [m["text"] for m in r] == ["Second update.", "Test: your report is ready."] and r[0]["case_id"] == root, r
+assert [m["text"] for m in r[:2]] == ["Second update.", "Test: your report is ready."] and r[0]["case_id"] == root, r
+assert any("prepared" in m["text"] for m in r)
 assert client.get("/messages/999").status_code == 404
 
 # A check the team asked for runs before the deadline, but never escalates.

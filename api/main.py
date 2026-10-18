@@ -426,8 +426,9 @@ def confirm(case_id: int, body: Confirmation):
         except HTTPException as e:
             error = e.detail
         working = caseworker.start(ids[0], "confirmed")
-        # The case worker texts when it's on; otherwise we send the "report is ready" text ourselves.
-        if filed and not working:
+        # Always text from here. On Modal the droid CLI is in the image, so the case worker looks
+        # "on" even when Factory never actually notifies; local has no droid, so this was the only path.
+        if filed:
             n = len(filed.get("case_ids") or ids)
             text = (f"Six Eyes: we prepared {n} {'report' if n == 1 else 'reports'} for X. "
                     f"They must take the posts down within {deadline_words()} of receiving them. "
@@ -467,10 +468,6 @@ def notice(case_id: int):
         channel = channels.channel_for(url or "")
     except KeyError:
         raise HTTPException(422, f"Six Eyes doesn't know where to send removal requests for {url}.")
-    signer, contact = os.environ.get("SIGNER_NAME"), os.environ.get("CONTACT_EMAIL")
-    if not (signer and contact):
-        raise HTTPException(503, "Set SIGNER_NAME and CONTACT_EMAIL on the API: the team member who signs "
-                                 "notices, and the team's reporting inbox.")
     dry = dry_run()
     scores = [json.loads(s) for _, _, s in rows]
     intimate = max(s.get("nsfw", 0) for s in scores) >= INTIMATE_MIN
@@ -493,8 +490,8 @@ def notice(case_id: int):
             packet = channels.TakedownNotice(
                 case_id=case_id, platform_name=channel.name, user_name=name, authorization_date=signed_at,
                 reported_username=username, content_urls=[u for _, u, _ in items],
-                depiction_kind=channels.FORGERY if forgery else channels.INTIMATE, signer_name=signer,
-                signer_relationship=f"Authorized representative of {name}", contact_email=contact,
+                depiction_kind=channels.FORGERY if forgery else channels.INTIMATE, signer_name=name,
+                signer_relationship="The identifiable individual depicted", contact_email="",
                 non_consent_confirmed=True)
         except ValidationError as e:
             raise HTTPException(422, f"The notice is incomplete: {e.errors()[0]['loc'][0]} {e.errors()[0]['msg']}.")
@@ -510,7 +507,7 @@ def notice(case_id: int):
                 + "\n\n----------\n\n".join(channels.instructions(channel, p) for p in packets))
         try:
             channels.send_email(to, f"[Six Eyes test] {n} TAKE IT DOWN {'report' if n == 1 else 'reports'} "
-                                    f"for {channel.name}", body, reply_to=contact)
+                                    f"for {channel.name}", body)
         except RuntimeError as e:
             raise HTTPException(503, str(e))
         except (smtplib.SMTPException, OSError):
@@ -663,8 +660,8 @@ def ftc_packet(con: sqlite3.Connection, case_ids: list[int], checked_at: str) ->
     return (channels.TEMPLATES / "ftc_packet.md").read_text().strip().format(
         generated_at=_when(checked_at), case_id=notice.get("via_case", up[0][0]), ftc_url=channels.escalation()["ftc"],
         platform_name=channel.name, request_url=channel.url or channel.name,
-        signer_name=os.environ.get("SIGNER_NAME") or "(set SIGNER_NAME)", user_name=name,
-        authorization_date=_when(signed_at, time=False), contact_email=os.environ.get("CONTACT_EMAIL") or "(set CONTACT_EMAIL)",
+        signer_name=name, user_name=name,
+        authorization_date=_when(signed_at, time=False), contact_email="",
         notice_date=_when(min(r[6] for r in up)), due_date=_when(min(r[7] for r in up)), checked_date=_when(checked_at),
         still_up="\n".join(f"- {u} (posted by @{_account(u)}), image PDQ hash {pdq or 'not computed'}"
                            for _, _, _, u, pdq, *_ in up),
@@ -682,10 +679,8 @@ def ftc_form(con: sqlite3.Connection, case_ids: list[int], packet: str, urls: li
     rows = con.execute(f"SELECT user_id, url, sent_at, due_at, scores FROM cases WHERE id IN ({marks}) ORDER BY url",
                        case_ids).fetchall()
     user_id, _, sent_at, due_at, _ = rows[0]
-    name, signed_at = con.execute("SELECT name, signed_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    name = con.execute("SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()[0]
     channel = channels.channel_for(rows[0][1] or "")
-    signer = os.environ.get("SIGNER_NAME") or "(set SIGNER_NAME)"
-    contact = os.environ.get("CONTACT_EMAIL") or "(set CONTACT_EMAIL)"
     by_url = {url: (sent, json.loads(scores) if isinstance(scores, str) else scores or {})
               for _, url, sent, _, scores in rows}
     listed, extra = (urls or [r[1] for r in rows])[:5], max(0, len(urls or rows) - 5)
@@ -726,19 +721,17 @@ def ftc_form(con: sqlite3.Connection, case_ids: list[int], packet: str, urls: li
         ]
     more = (f" {extra} more URLs are in the complaint packet; file another report if this one only takes five."
             if extra else "")
-    experience = (f"On {_when(sent_at)}, {signer} used {channel.name}'s reporting process to file a TAKE IT DOWN "
-                  f"request as the authorized representative of {name} (form: {channel.url or channel.name}). "
-                  f"The Act required removal within 48 hours, by {_when(due_at)}. On {_when(checked_at)} these "
-                  f"posts were still up.{more}")
-    reporter = (f"{signer}, authorized representative of {name}. {name} authorized the representative in writing "
-                f"on {_when(signed_at, time=False)}. Contact: {contact}.")
+    experience = (f"On {_when(sent_at)}, I used {channel.name}'s reporting process to file a TAKE IT DOWN "
+                  f"request (form: {channel.url or channel.name}). The Act required removal within 48 hours, "
+                  f"by {_when(due_at)}. On {_when(checked_at)} these posts were still up.{more}")
     out += [
         field("Share more about the platform",
               "Please share more about the platform’s response, whether duplicates were removed, and if you’ve "
               "filed previous reports.", experience, type="textarea"),
-        field("Your information (optional)", "Who is reporting? (you or an authorized representative)",
-              reporter, required=False, type="textarea"),
-        field("Your information (optional)", "Contact email", contact, required=False),
+        field("Your information", "Who is reporting?",
+              f"You — type your name ({name}). You are reporting for yourself, the person shown.", type="you"),
+        field("Your information", "Contact email",
+              "Type an email you check. The FTC may use it to follow up.", required=False, type="you"),
         field("If they ask for more detail", "Full complaint packet", packet, required=False, type="textarea"),
         field("Review and submit", "Submit the report?",
               "Only submit if this is a real case. Don't file a test report — our test posts were shared with consent."
@@ -834,7 +827,7 @@ def _settled_notice(user_id: int, resolved: list[int], escalated: list[int]) -> 
         dash = dashboard_url(user_id)
         text = (f"Six Eyes: {taken}{still}. File with the FTC: {ftc}  "
                 f"Answers to paste: {dash}  "
-                f"The team can file as your authorized representative. You don't need to describe the images.")
+                f"Open the form and fill in your own name and email. You don't need to describe the images.")
         if dry_run():
             text = "Test: " + text + " Don't file this — our test posts were shared with consent."
         return text, ftc

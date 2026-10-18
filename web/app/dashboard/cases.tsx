@@ -535,7 +535,7 @@ function SettledNote({ s, onFile }: { s: Settled; onFile?: (s: Settled) => void 
       <span className="note-title">{title}</span>
       <p>
         {up
-          ? "X did not remove the remaining posts in time. Next step: a complaint to the FTC (it enforces the TAKE IT DOWN Act). Open the form — a guide stays on top matching each FTC screen. Choose the option it names, or paste when it asks for text. You don’t need to describe the images. Don’t file a test report for real."
+          ? "X did not remove the remaining posts in time. Next step: a complaint to the FTC (it enforces the TAKE IT DOWN Act). Open the form — a guide stays on top matching each FTC screen. Paste the post facts; type your own name and email. You don’t need to describe the images. Don’t file a test report for real."
           : "X removed the reported posts. Nothing else to do."}
       </p>
       {up && (s.ftc_url || steps.length > 0) && (
@@ -601,8 +601,8 @@ function FtcFloatPanel({ s, formOpened }: { s: Settled; formOpened: boolean }) {
         <h1 className="title">TakeItDown.ftc.gov</h1>
         <p className={`fp-callout${s.dry_run ? " is-test" : ""}`}>
           {s.dry_run
-            ? "Test mode: our test posts were shared with consent, so don’t submit this."
-            : "Follow each screen. Choose the option named here, or paste when the form asks for text. You don’t need to upload or describe the images."}
+            ? "Test mode: our test posts were shared with consent, so don’t submit this. Type your own name and email when the form asks."
+            : "Follow each screen. Choose the option named here, or paste when it asks for text. Type your own name and email — Six Eyes only fills the post facts. You don’t need to upload or describe the images."}
         </p>
       </header>
       <main className="fp-body">
@@ -685,7 +685,7 @@ function FormGuide({ packet, formUrl, platform }: { packet: Packet; formUrl: str
             </span>
             <div className="form-a">
               <span>{f.type === "select" ? `Choose “${f.value}”` : f.value}</span>
-              {f.type !== "select" && <CopyButton text={f.value} />}
+              {f.type !== "select" && f.type !== "you" && f.type !== "skip" && <CopyButton text={f.value} />}
             </div>
           </li>
         ))}
@@ -712,7 +712,7 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
   const preset = packet.form.filter((f) => f.preset);
   const steps = packet.form.filter((f) => !f.preset);
   const done = copied[packet.reported_username] ?? [];
-  const copyable = steps.filter((f) => f.type !== "select").length;
+  const copyable = steps.filter((f) => f.type !== "select" && f.type !== "you" && f.type !== "skip").length;
   const posts = (k: number) => `${k} ${k === 1 ? "post" : "posts"}`;
 
   return (
@@ -745,7 +745,7 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
         <p className={`fp-callout${n.dry_run ? " is-test" : ""}`}>
           {n.dry_run
             ? `Test mode: our test posts were shared with consent, so don’t submit this.${n.intimate ? "" : " Live, it wouldn’t qualify: it doesn’t look intimate."}`
-            : `${n.platform} must remove the posts within 48 hours of receiving this.`}
+            : `${n.platform} must remove the posts within 48 hours of receiving this. Type your own email and name; paste the post URLs Six Eyes filled in.`}
         </p>
       </header>
 
@@ -772,7 +772,7 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
                   <span className={`fp-value${f.value.includes("\n") ? " clamp" : ""}`}>
                     {f.type === "select" ? `Choose “${f.value}”` : f.value}
                   </span>
-                  {f.type !== "select" && (
+                  {f.type !== "select" && f.type !== "you" && f.type !== "skip" && (
                     <CopyButton
                       text={f.value}
                       onCopied={() => setCopied((c) => ({ ...c, [packet.reported_username]: [...new Set([...done, i])] }))}
@@ -826,7 +826,7 @@ function ftcAnswer(f: FtcField) {
 }
 
 function ftcCopyable(f: FtcField) {
-  return f.type !== "select" && f.type !== "skip";
+  return f.type !== "select" && f.type !== "skip" && f.type !== "you";
 }
 
 function groupFtc(steps: FtcField[]) {
