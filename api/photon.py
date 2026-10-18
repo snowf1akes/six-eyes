@@ -1,7 +1,8 @@
 """Send the user a text through Photon (https://api.photon.codes/v1).
 
 Needs PHOTON_API_KEY, PHOTON_PROJECT_ID (pho_prj_…) and PHOTON_AGENT_USER_ID (the agent's
-User on the SMS platform). Enroll stores the number; we send E.164 SMS, never the images.
+User). PHOTON_PLATFORM must match that agent (sms or imessage). Enroll stores the number;
+we never send the images.
 """
 import logging
 import os
@@ -18,6 +19,11 @@ _THREADS: dict[str, tuple[str, str]] = {}
 
 def enabled() -> bool:
     return all(os.environ.get(k) for k in ("PHOTON_API_KEY", "PHOTON_PROJECT_ID", "PHOTON_AGENT_USER_ID"))
+
+
+def platform() -> str:
+    """sms or imessage — must be the same platform as PHOTON_AGENT_USER_ID."""
+    return (os.environ.get("PHOTON_PLATFORM") or "sms").strip().lower()
 
 
 def e164(phone: str) -> str | None:
@@ -43,10 +49,11 @@ def send(phone: str, text: str) -> str | None:
     if not enabled():
         return None
     agent = os.environ["PHOTON_AGENT_USER_ID"]
+    chan = platform()
     user_id, space_id = _THREADS.get(to) or (None, None)
     if not user_id:
-        user_id = _post("/users", {"platform": "sms", "handle": to})["id"]
-        space_id = _post("/spaces", {"platform": "sms", "participantIds": [agent, user_id]})["id"]
+        user_id = _post("/users", {"platform": chan, "handle": to})["id"]
+        space_id = _post("/spaces", {"platform": chan, "participantIds": [agent, user_id]})["id"]
         _THREADS[to] = (user_id, space_id)
     msg = _post("/messages", {"spaceId": space_id, "senderId": agent,
                               "content": {"type": "text", "format": "plain", "text": text}})
@@ -60,5 +67,7 @@ def _post(path: str, body: dict) -> dict:
         "Content-Type": "application/json",
         "idempotency-key": str(uuid.uuid4()),
     }, timeout=20)
-    r.raise_for_status()
+    if not r.is_success:
+        log.error("Photon %s %s: %s", r.status_code, path, (r.text or "")[:500])
+        r.raise_for_status()
     return r.json() if r.content else {}

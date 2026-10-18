@@ -31,7 +31,10 @@ def _load_local_env() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("'").strip('"'))
+        key, value = key.strip(), value.strip().strip("'").strip('"')
+        # Fill missing or blank vars from .env; a shell `export X_BEARER_TOKEN=` would otherwise win.
+        if key and not os.environ.get(key):
+            os.environ[key] = value
 
 
 _load_local_env()
@@ -423,6 +426,13 @@ def confirm(case_id: int, body: Confirmation):
         except HTTPException as e:
             error = e.detail
         working = caseworker.start(ids[0], "confirmed")
+        # The case worker texts when it's on; otherwise we send the "report is ready" text ourselves.
+        if filed and not working:
+            n = len(filed.get("case_ids") or ids)
+            text = (f"Six Eyes: we prepared {n} {'report' if n == 1 else 'reports'} for X. "
+                    f"They must take the posts down within {deadline_words()} of receiving them. "
+                    f"We'll text you if they're still up after that.")
+            tell_user(case[0], ids[0], ("Test: " + text) if dry_run() else text)
     return {"confirmed": ids, "notice": filed, "notice_error": error, "caseworker": working}
 
 
@@ -561,10 +571,11 @@ def recheck(user_id: int | None = None) -> list[dict]:
                 log.warning("recheck of case %s skipped: %s", first, e)
                 continue
             resolved = resolve([i for i, _, url in rows if not live[url]], "recheck")
-            escalated, packet = escalate([i for i, _, url in rows if live[url]], "recheck")
+            escalated, packet, form = escalate([i for i, _, url in rows if live[url]], "recheck")
             settled.append({"case_id": first, "resolved": resolved, "escalated": escalated, "ftc_packet": packet,
-                            "ftc_url": channels.escalation()["ftc"] if escalated else None})
-            tell_user(uid, first, *_settled_notice(resolved, escalated))
+                            "ftc_url": channels.escalation()["ftc"] if escalated else None,
+                            "ftc_form": form or None, "dry_run": dry_run()})
+            tell_user(uid, first, *_settled_notice(uid, resolved, escalated))
         return settled
 
 
@@ -584,23 +595,24 @@ def resolve(case_ids: list[int], via: str) -> list[int]:
     return moved
 
 
-def escalate(case_ids: list[int], via: str) -> tuple[list[int], str | None]:
+def escalate(case_ids: list[int], via: str) -> tuple[list[int], str | None, list[dict]]:
     """Noticed cases still up after the deadline move to escalated, each with an events row holding the
-    FTC complaint packet. Nothing is filed: TakeItDown.ftc.gov is a web form a person submits."""
+    FTC complaint packet and form answers. Nothing is filed: TakeItDown.ftc.gov is a web form a person submits."""
     at = _now()
     with closing(db()) as con, con:
         moved = [i for i in case_ids
                  if con.execute("UPDATE cases SET state = 'escalated' WHERE id = ? AND state = 'noticed'", (i,)).rowcount]
         if not moved:
-            return [], None
+            return [], None, []
         packet = ftc_packet(con, moved, at)
         urls = [r[0] for r in con.execute(f"SELECT DISTINCT url FROM cases WHERE id IN ({','.join('?' * len(moved))}) "
                                           "ORDER BY url", moved)]
+        form = ftc_form(con, moved, packet, urls, at)
         detail = json.dumps({"via": via, "still_up": urls, "dry_run": dry_run(),
-                             "ftc_url": channels.escalation()["ftc"], "ftc_packet": packet})
+                             "ftc_url": channels.escalation()["ftc"], "ftc_packet": packet, "ftc_form": form})
         con.executemany("INSERT INTO events (case_id, at, kind, detail) VALUES (?, ?, 'escalated', ?)",
                         [(i, at, detail) for i in moved])
-    return moved, packet
+    return moved, packet, form
 
 
 TIMELINE = {
@@ -664,6 +676,77 @@ def ftc_packet(con: sqlite3.Connection, case_ids: list[int], checked_at: str) ->
                                               if p["reported_username"] in accounts) or "(no copy on record)")
 
 
+def ftc_form(con: sqlite3.Connection, case_ids: list[int], packet: str, urls: list[str], checked_at: str) -> list[dict]:
+    """Answers that follow TakeItDown.ftc.gov screen by screen (get-started → report)."""
+    marks = ",".join("?" * len(case_ids))
+    rows = con.execute(f"SELECT user_id, url, sent_at, due_at, scores FROM cases WHERE id IN ({marks}) ORDER BY url",
+                       case_ids).fetchall()
+    user_id, _, sent_at, due_at, _ = rows[0]
+    name, signed_at = con.execute("SELECT name, signed_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    channel = channels.channel_for(rows[0][1] or "")
+    signer = os.environ.get("SIGNER_NAME") or "(set SIGNER_NAME)"
+    contact = os.environ.get("CONTACT_EMAIL") or "(set CONTACT_EMAIL)"
+    by_url = {url: (sent, json.loads(scores) if isinstance(scores, str) else scores or {})
+              for _, url, sent, _, scores in rows}
+    listed, extra = (urls or [r[1] for r in rows])[:5], max(0, len(urls or rows) - 5)
+    n = len(listed)
+
+    def field(screen: str, question: str, value: str, *, required: bool = True, type: str = "text") -> dict:
+        return {"screen": screen, "question": question, "required": required, "type": type, "value": value}
+
+    out = [
+        field("Get started", "Choose one",
+              "I asked the platform to remove an intimate photo or video. The platform didn't take it "
+              "(or duplicates) down within 48 hours.", type="select"),
+        field("About the platform", "What platform are you reporting?", channel.name),
+    ]
+    for i, url in enumerate(listed, 1):
+        screen = f"Photo or video {i} of {n}" if n > 1 else "About the photo or video"
+        sent, scores = by_url.get(url, (sent_at, {}))
+        fake = scores.get("fake_prob")
+        ai = "Yes" if isinstance(fake, (int, float)) and fake >= 0.5 else "I don't know"
+        out += [
+            field(screen, "When did you report this intimate photo or video to the platform?",
+                  _us_date(sent or sent_at)),
+            field(screen, "How did you contact the platform?",
+                  "I used the platform's reporting process", type="select"),
+            field(screen, "Enter the link where the intimate photo or video is posted on the platform", url),
+            field(screen, "URL of image (if applicable)",
+                  "Leave blank — Six Eyes does not store the image file.", required=False, type="skip"),
+            field(screen, "Other location details",
+                  f"Posted by @{_account(url)} on {channel.name}."),
+            field(screen, "Platform report or ticket number (if applicable)",
+                  "Leave blank — we don't have a ticket number from X.", required=False, type="skip"),
+            field(screen, "Did the platform eventually remove the intimate photo or video?", "No", type="select"),
+            field(screen, "Was the photo or video created or altered with AI or other technology?", ai, type="select"),
+            field(screen, "Was the person shown in the photo or video under 18 when it was taken?",
+                  "No", type="select"),
+            field(screen, "Do you want to report a different intimate photo or video posted on this platform?",
+                  "Yes" if i < n else "No", type="select"),
+        ]
+    more = (f" {extra} more URLs are in the complaint packet; file another report if this one only takes five."
+            if extra else "")
+    experience = (f"On {_when(sent_at)}, {signer} used {channel.name}'s reporting process to file a TAKE IT DOWN "
+                  f"request as the authorized representative of {name} (form: {channel.url or channel.name}). "
+                  f"The Act required removal within 48 hours, by {_when(due_at)}. On {_when(checked_at)} these "
+                  f"posts were still up.{more}")
+    reporter = (f"{signer}, authorized representative of {name}. {name} authorized the representative in writing "
+                f"on {_when(signed_at, time=False)}. Contact: {contact}.")
+    out += [
+        field("Share more about the platform",
+              "Please share more about the platform’s response, whether duplicates were removed, and if you’ve "
+              "filed previous reports.", experience, type="textarea"),
+        field("Your information (optional)", "Who is reporting? (you or an authorized representative)",
+              reporter, required=False, type="textarea"),
+        field("Your information (optional)", "Contact email", contact, required=False),
+        field("If they ask for more detail", "Full complaint packet", packet, required=False, type="textarea"),
+        field("Review and submit", "Submit the report?",
+              "Only submit if this is a real case. Don't file a test report — our test posts were shared with consent."
+              if dry_run() else "Review the answers, then submit.", type="select"),
+    ]
+    return out
+
+
 # ponytail: no auth yet, so anyone with a case id can time-warp it. Test mode only, so nothing real escalates.
 @app.post("/timewarp/{case_id}")
 def timewarp(case_id: int):
@@ -717,15 +800,30 @@ def tell_user(user_id: int, case_id: int, text: str, link: str | None = None) ->
         con.execute("INSERT INTO messages (user_id, case_id, at, text, link) VALUES (?, ?, ?, ?, ?)",
                     (user_id, case_id, _now(), text, link))
     if not phone:
+        log.info("user %s has no phone; case %s update was not texted", user_id, case_id)
         return
     try:
-        if photon.send(phone, text) is None and not photon.enabled():
+        msg_id = photon.send(phone, text)
+        if msg_id:
+            log.info("Photon text %s for case %s", msg_id, case_id)
+        elif not photon.enabled():
             log.info("no Photon credentials; case %s update was not texted", case_id)
+        else:
+            log.warning("Photon did not send the text for case %s", case_id)
     except httpx.HTTPError:
         log.exception("Photon text for case %s failed", case_id)
 
 
-def _settled_notice(resolved: list[int], escalated: list[int]) -> tuple[str, str | None]:
+def app_url() -> str:
+    """Public site origin used in texts. Default is the Vercel deploy."""
+    return (os.environ.get("APP_URL") or "https://six-eyes-henna.vercel.app").rstrip("/")
+
+
+def dashboard_url(user_id: int) -> str:
+    return f"{app_url()}/dashboard?user={user_id}"
+
+
+def _settled_notice(user_id: int, resolved: list[int], escalated: list[int]) -> tuple[str, str | None]:
     """SMS after a deadline check: what happened, and where to escalate if anything is still up."""
     ftc = channels.escalation()["ftc"]
     gone, up = len(resolved), len(escalated)
@@ -733,9 +831,10 @@ def _settled_notice(resolved: list[int], escalated: list[int]) -> tuple[str, str
         still = (f"{up} {'post is' if up == 1 else 'posts are'} still up {deadline_words()} after we asked X "
                  f"to take them down")
         taken = f"{gone} {'was' if gone == 1 else 'were'} taken down. " if gone else ""
-        text = (f"Six Eyes: {taken}{still}. Next step: a complaint to the FTC (it enforces the TAKE IT DOWN Act) "
-                f"at {ftc}. The team has the packet and can file it as your authorized representative. "
-                f"You don't need to describe the images.")
+        dash = dashboard_url(user_id)
+        text = (f"Six Eyes: {taken}{still}. File with the FTC: {ftc}  "
+                f"Answers to paste: {dash}  "
+                f"The team can file as your authorized representative. You don't need to describe the images.")
         if dry_run():
             text = "Test: " + text + " Don't file this — our test posts were shared with consent."
         return text, ftc
@@ -752,13 +851,22 @@ def open_escalations(user_id: int) -> list[dict]:
             JOIN events e ON e.rowid = (
                 SELECT MAX(rowid) FROM events WHERE case_id = c.id AND kind = 'escalated')
             WHERE c.user_id = ? AND c.state = 'escalated' ORDER BY c.id""", (user_id,)).fetchall()
-    by_cluster: dict[int, dict] = {}
-    for cid, cluster, detail in rows:
-        g = by_cluster.setdefault(cluster, {"ids": [], "detail": json.loads(detail)})
-        g["ids"].append(cid)
-    return [{"case_id": g["ids"][0], "resolved": [], "escalated": g["ids"],
-             "ftc_packet": g["detail"].get("ftc_packet"), "ftc_url": g["detail"].get("ftc_url")}
-            for g in by_cluster.values()]
+        by_cluster: dict[int, dict] = {}
+        for cid, cluster, detail in rows:
+            g = by_cluster.setdefault(cluster, {"ids": [], "detail": json.loads(detail)})
+            g["ids"].append(cid)
+        out = []
+        for g in by_cluster.values():
+            d = g["detail"]
+            packet, urls = d.get("ftc_packet") or "", d.get("still_up") or []
+            try:
+                form = ftc_form(con, g["ids"], packet, urls, _now()) if packet or urls else d.get("ftc_form")
+            except (IndexError, TypeError, ValueError):
+                form = d.get("ftc_form")
+            out.append({"case_id": g["ids"][0], "resolved": [], "escalated": g["ids"],
+                        "ftc_packet": packet or None, "ftc_url": d.get("ftc_url"),
+                        "ftc_form": form, "dry_run": d.get("dry_run")})
+    return out
 
 
 def _now() -> str:
@@ -768,6 +876,11 @@ def _now() -> str:
 def _when(iso: str, time: bool = True) -> str:
     d = datetime.fromisoformat(iso).astimezone(timezone.utc)
     return f"{d:%B} {d.day}, {d:%Y}" + (f", {d:%H:%M} UTC" if time else "")
+
+
+def _us_date(iso: str) -> str:
+    """mm/dd/yyyy, the date format TakeItDown.ftc.gov asks for."""
+    return datetime.fromisoformat(iso).astimezone(timezone.utc).strftime("%m/%d/%Y")
 
 
 def _pct(n: float) -> str:
