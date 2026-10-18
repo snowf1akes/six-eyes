@@ -10,6 +10,7 @@ import math
 import os
 import smtplib
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
@@ -39,6 +40,9 @@ NOTICE_DEADLINE = timedelta(hours=48)  # TAKE IT DOWN Act: platforms remove with
 INTIMATE_MIN = 0.5  # NSFW score a live notice needs; the Act only covers intimate depictions (NOTES.md flag 3)
 FORGERY_MIN = 0.5   # fake_prob from which the notice calls the image a digital forgery
 log = logging.getLogger("six_eyes")
+# user_id -> progress of the latest background scan. In memory: Modal runs one API container.
+SCANS: dict[int, dict] = {}
+SCAN_LOCK = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -162,12 +166,51 @@ def enroll(
 
 
 @app.post("/scan/{user_id}")
-def scan(user_id: int, sweep: bool = False):
+def scan(user_id: int, sweep: bool = False, background: bool = False):
     """Search X for the user, score every new image and video, and save each one as a found case.
 
     sweep=true also checks recent posts that use deepfake terms without naming the user; those
     become cases only when a face in them matches the user's enrolled face.
+    background=true starts the scan in a thread and returns its progress at once; poll GET /scan/{user_id}.
+    The dashboard uses it because Modal cuts web requests at 150 s and a first scan can run longer.
     """
+    progress = {"user_id": user_id, "posts_checked": 0, "cases_found": 0, "media_failed": 0}
+    if not background:
+        run_scan(user_id, sweep, progress)
+        return progress
+    with closing(db()) as con:
+        if not con.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+            raise HTTPException(404, f"No enrolled user with id {user_id}.")
+    with SCAN_LOCK:
+        if not SCANS.get(user_id, {}).get("running"):
+            SCANS[user_id] = {**progress, "running": True, "error": None}
+            threading.Thread(target=background_scan, args=(user_id, sweep), daemon=True).start()
+        return SCANS[user_id]
+
+
+@app.get("/scan/{user_id}")
+def scan_status(user_id: int):
+    """Progress of the user's latest background scan."""
+    return SCANS.get(user_id, {"user_id": user_id, "posts_checked": 0, "cases_found": 0, "media_failed": 0,
+                               "running": False, "error": None})
+
+
+def background_scan(user_id: int, sweep: bool) -> None:
+    status = SCANS[user_id]
+    try:
+        run_scan(user_id, sweep, status)
+    except HTTPException as e:
+        status["error"] = e.detail
+    except Exception:
+        log.exception("background scan failed for user %s", user_id)
+        status["error"] = "The scan stopped early. Found posts so far are saved; scan again to continue."
+    finally:
+        status["running"] = False
+
+
+def run_scan(user_id: int, sweep: bool, progress: dict) -> None:
+    """The scan itself. Each case is saved as soon as it's found, so a scan cut off partway keeps its
+    finds; progress counts go up as it runs."""
     with closing(db()) as con:
         user = con.execute("SELECT name, handles, embedding FROM users WHERE id = ?", (user_id,)).fetchone()
         if not user:
@@ -204,42 +247,42 @@ def scan(user_id: int, sweep: bool = False):
         raise HTTPException(502, "Can't reach X right now. Try the scan again shortly.")
 
     now = datetime.now(timezone.utc)
-    found, checked, failed = [], 0, 0
+    at = now.isoformat(timespec="seconds")
     for post, source in posts:
         if post.id in seen:
             continue
         seen.add(post.id)
-        checked += 1
+        progress["posts_checked"] += 1
         post_signals = signals.signals(post, now).model_dump()
         for media in post.media:
             try:
                 result = analyze.analyze(media.url, embedding)
             except Exception:  # one unreadable image or video shouldn't sink the whole scan
                 log.exception("analyze failed for post %s media %s", post.id, media.key)
-                failed += 1
+                progress["media_failed"] += 1
                 continue
             if source == "sweep" and result.face_sim < FACE_MATCH_MIN:
                 continue
-            found.append((post, result.pdq, {
-                **result.model_dump(), "signals": post_signals, "source": source, "media": media.model_dump(),
-                "possibly_sensitive": post.possibly_sensitive, "text": post.text,
-            }))
+            scores = {**result.model_dump(), "signals": post_signals, "source": source, "media": media.model_dump(),
+                      "possibly_sensitive": post.possibly_sensitive, "text": post.text}
+            with closing(db()) as con, con:
+                case_id = con.execute(
+                    "INSERT INTO cases (user_id, post_id, author_id, url, pdq, scores) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, post.id, post.author.id if post.author else None, post.url, result.pdq,
+                     json.dumps(scores)),
+                ).lastrowid
+                con.execute("INSERT INTO events (case_id, at, kind, detail) VALUES (?, ?, 'found', ?)",
+                            (case_id, at, source))
+            progress["cases_found"] += 1
 
-    at = now.isoformat(timespec="seconds")
+    # ponytail: a scan cut off partway can leave older name-search posts behind the next since_id;
+    # they come back only if they are reposted. Fine for the demo's handful of posts.
     with closing(db()) as con, con:
-        for post, pdq, scores in found:
-            case_id = con.execute(
-                "INSERT INTO cases (user_id, post_id, author_id, url, pdq, scores) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, post.id, post.author.id if post.author else None, post.url, pdq, json.dumps(scores)),
-            ).lastrowid
-            con.execute("INSERT INTO events (case_id, at, kind, detail) VALUES (?, ?, 'found', ?)",
-                        (case_id, at, scores["source"]))
         recluster(con, user_id)
         if swept:
             con.execute("INSERT INTO sweeps (user_id, since_id) VALUES (?, ?) "
                         "ON CONFLICT (user_id) DO UPDATE SET since_id = excluded.since_id",
                         (user_id, max((p.id for p in swept), key=int)))
-    return {"user_id": user_id, "posts_checked": checked, "cases_found": len(found), "media_failed": failed}
 
 
 def recluster(con: sqlite3.Connection, user_id: int) -> None:

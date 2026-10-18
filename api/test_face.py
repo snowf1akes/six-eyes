@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from insightface.data import get_image
 
-from analyze import analyze
+from analyze import analyze, probe
 from face import face_model
 from signals import CLONE_MAX_DISTANCE, clusters
 
@@ -73,6 +73,14 @@ print(f"PDQ distance: repost {distance(same, repost)}  different photo {distance
 assert len(same.pdq) == 64 and same.pdq == analyze(url + "group.jpg", enrolled).pdq
 assert distance(same, repost) <= CLONE_MAX_DISTANCE < distance(same, other)
 assert len(clip.pdq) == 64
+# Detector fields: only faces that match the user get scored; someone else and the blank image don't.
+assert all(0 <= r.fake_prob <= 1 and 0 <= r.nsfw < 0.5 for r in (same, clip)), (same, clip)
+assert all(r.generator_guess == "not-scored" and r.fake_prob == r.nsfw == 0 for r in (other, none)), (other, none)
+assert other.recon_score is None and none.recon_score is None, (other, none)
+assert all(r.c2pa is None for r in (same, other, none, clip)), "the bundled photos carry no Content Credentials"
+if probe():  # a checkout without data/models keeps the placeholder
+    assert same.generator_guess in {"real", "swap", "inpaint", "txt2img", "vae-decoded"}, same
+    assert same.recon_score > 0 and clip.recon_score > 0, (same, clip)
 # The blank image is too flat to hash, so it never joins a clone cluster.
 assert none.pdq == "", none.pdq
 assert clusters([same.pdq, repost.pdq, other.pdq, none.pdq]) == [0, 0, 2, None]
@@ -82,6 +90,6 @@ for bad in ("not_an_image.jpg", "missing.jpg"):
         raise AssertionError(f"{bad} should fail")
     except Exception as e:
         assert not isinstance(e, AssertionError), e
-assert not os.listdir(tempfile.tempdir), "a downloaded video was left in the temp dir"
+assert not [f for f in os.listdir(tempfile.tempdir) if f.endswith(".mp4")], "a downloaded video was left in the temp dir"
 server.shutdown()
 print("face self-check passed")

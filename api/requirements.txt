@@ -7,3 +7,12 @@ opencv-python
 numpy
 httpx
 pdqhash
+torch
+torchvision  # DINOv3's image processor needs it
+transformers
+pillow
+diffusers
+lpips
+c2pa-python
+# Must match the version that pickled data/models/*.joblib (ml/heads.py), or the heads may not load.
+scikit-learn==1.9.1

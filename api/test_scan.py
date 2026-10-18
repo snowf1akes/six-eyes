@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 
 from datetime import datetime, timedelta
 
@@ -208,8 +209,29 @@ r = client.post(f"/cases/{by_post['13']['id']}/confirm", json=both).json()
 assert r["notice"] is None and r["notice_error"].startswith("Set SIGNER_NAME"), r
 os.environ["SIGNER_NAME"] = "Raymond Wang"
 
+
+
+def background_scan():
+    """Start a background scan (the dashboard's mode) and poll GET /scan until it finishes."""
+    r = client.post(f"/scan/{user_id}?background=true")
+    assert r.status_code == 200 and r.json()["user_id"] == user_id, r.text
+    for _ in range(200):
+        status = client.get(f"/scan/{user_id}").json()
+        if not status["running"]:
+            return status
+        time.sleep(0.05)
+    raise AssertionError("background scan never finished")
+
+
+# Background scan: returns at once, saves cases as it goes, and reports progress until done.
+search_results[:] = [post("14", "a")]
+assert background_scan() == {"user_id": user_id, "posts_checked": 1, "cases_found": 1, "media_failed": 0,
+                             "running": False, "error": None}
+assert cases()[-1][1] == "14"
+
 # Errors.
 assert client.post("/scan/999").status_code == 404
+assert client.post("/scan/999?background=true").status_code == 404
 
 req = httpx.Request("GET", "https://api.x.com")
 for exc, code in [(httpx.HTTPStatusError("", request=req, response=httpx.Response(429, request=req)), 429),
@@ -220,5 +242,6 @@ for exc, code in [(httpx.HTTPStatusError("", request=req, response=httpx.Respons
     x.search = raises(exc)
     r = client.post(f"/scan/{user_id}")
     assert r.status_code == code, (exc, r.status_code, r.text)
+assert background_scan()["error"] == "Need a name or at least one valid X handle to search.", "errors show in status"
 
 print("scan self-check passed")

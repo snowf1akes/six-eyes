@@ -45,17 +45,20 @@ def similarity(img: np.ndarray, user: np.ndarray) -> float | None:
     return max(float(f.normed_embedding @ user) for f in found) if found else None
 
 
-def download(media_url: str) -> tuple[list[np.ndarray], bool]:
-    """The image, or up to VIDEO_FRAMES frames sampled evenly across a video; and whether it's a video."""
+def download(media_url: str) -> tuple[list[np.ndarray], bool, bytes, str]:
+    """The image, or up to VIDEO_FRAMES frames sampled evenly across a video; whether it's a video; and the
+    file's bytes and media type, for checks that read the file itself (C2PA). Kept in memory only."""
     with httpx.stream("GET", media_url, timeout=30, follow_redirects=True) as r:
         r.raise_for_status()
-        if r.headers.get("content-type", "").startswith("video/") or urlsplit(media_url).path.endswith(".mp4"):
-            return _video_frames(r), True
-        data = _read(r, MAX_IMAGE_BYTES)
+        mime = r.headers.get("content-type", "").split(";")[0].strip()
+        is_video = mime.startswith("video/") or urlsplit(media_url).path.endswith(".mp4")
+        data = _read(r, MAX_VIDEO_BYTES if is_video else MAX_IMAGE_BYTES)
+    if is_video:
+        return _video_frames(data), True, data, mime or "video/mp4"
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"Not a readable image: {media_url}")
-    return [img], False
+    return [img], False, data, mime or "image/jpeg"
 
 
 def match(frames: list[np.ndarray], is_video: bool, user_embedding: list[float]) -> tuple[float, float | None]:
@@ -72,12 +75,12 @@ def match(frames: list[np.ndarray], is_video: bool, user_embedding: list[float])
     return max(sims), float(np.var(sims)) if is_video else None
 
 
-def _video_frames(r: httpx.Response) -> list[np.ndarray]:
+def _video_frames(data: bytes) -> list[np.ndarray]:
     # OpenCV only reads video from a file path, so the video briefly touches disk.
     fd, path = tempfile.mkstemp(suffix=".mp4")
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(_read(r, MAX_VIDEO_BYTES))
+            f.write(data)
         cap = cv2.VideoCapture(path)
         try:
             n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

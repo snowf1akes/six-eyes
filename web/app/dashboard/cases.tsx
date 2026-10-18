@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, CircleAlert, CircleCheck, ExternalLink, Eye, EyeOff } from "../icons";
 
@@ -94,6 +94,7 @@ export function Cases() {
   const [filings, setFilings] = useState<Filing[]>([]);
   const [floating, setFloating] = useState<Floating | null>(null);
   const [reload, setReload] = useState(0);
+  const refresh = useCallback(() => setReload((n) => n + 1), []);
 
   function onConfirmed(filing: Filing, { float, form }: Helper) {
     setLoad((l) => (l.status === "ready" ? { ...l, cases: l.cases.filter((c) => !filing.ids.includes(c.id)) } : l));
@@ -150,7 +151,7 @@ export function Cases() {
       {filings.map((f) => (
         <FilingNote key={f.caseId} filing={f} onRetried={onRetried} />
       ))}
-      <Scan user={user} onDone={() => setReload((n) => n + 1)} />
+      <Scan user={user} onProgress={refresh} />
       {load.cases.length ? (
         <>
           <p className="meta">
@@ -175,22 +176,67 @@ export function Cases() {
 
 type ScanState =
   | { status: "idle" }
-  | { status: "scanning" }
+  | { status: "scanning"; checked: number; found: number }
   | { status: "done"; checked: number; found: number; failed: number }
   | { status: "error"; message: string };
 
-// Searches X for the user's name and handles, plus deepfake keywords matched against their face.
-function Scan({ user, onDone }: { user: string; onDone: () => void }) {
+type ScanStatus = { running: boolean; posts_checked: number; cases_found: number; media_failed: number; error: string | null };
+
+// Starts a background scan (start = true) or reads the latest one's progress.
+async function scanStatus(user: string, start = false): Promise<ScanStatus> {
+  const res = await fetch(`${API}/scan/${encodeURIComponent(user)}${start ? "?sweep=true&background=true" : ""}`, {
+    method: start ? "POST" : "GET",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The scan didn’t start. Try again.");
+  return data;
+}
+
+// Searches X for the user's name and handles, plus deepfake keywords matched against their face. The scan runs
+// in the background on the server, because a first scan can outlast a web request; this polls it every few
+// seconds and refreshes the list as new posts are found.
+function Scan({ user, onProgress }: { user: string; onProgress: () => void }) {
   const [scan, setScan] = useState<ScanState>({ status: "idle" });
+  const live = useRef(true);
+
+  const follow = useCallback(
+    async (s: ScanStatus) => {
+      let shown = -1;
+      while (s.running && live.current) {
+        setScan({ status: "scanning", checked: s.posts_checked, found: s.cases_found });
+        if (s.cases_found !== shown) {
+          shown = s.cases_found;
+          onProgress();
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+        s = await scanStatus(user);
+      }
+      if (!live.current) return;
+      onProgress();
+      setScan(
+        s.error
+          ? { status: "error", message: s.error }
+          : { status: "done", checked: s.posts_checked, found: s.cases_found, failed: s.media_failed },
+      );
+    },
+    [user, onProgress],
+  );
+
+  // Pick up a scan that's already running, such as the one enrolling starts.
+  useEffect(() => {
+    live.current = true;
+    scanStatus(user)
+      .then((s) => (s.running ? follow(s) : undefined))
+      .catch(() => {});
+    return () => {
+      live.current = false;
+    };
+  }, [user, follow]);
 
   async function run() {
-    setScan({ status: "scanning" });
+    setScan({ status: "scanning", checked: 0, found: 0 });
     try {
-      const res = await fetch(`${API}/scan/${encodeURIComponent(user)}?sweep=true`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The scan didn’t finish. Try again.");
-      setScan({ status: "done", checked: data.posts_checked, found: data.cases_found, failed: data.media_failed });
-      onDone();
+      await follow(await scanStatus(user, true));
     } catch (e) {
       setScan({ status: "error", message: e instanceof TypeError ? "Can't reach the Six Eyes server. Check that the API is running." : (e as Error).message });
     }
@@ -203,7 +249,9 @@ function Scan({ user, onDone }: { user: string; onDone: () => void }) {
           {scan.status === "scanning" ? "Scanning X…" : "Scan X now"}
         </button>
         <span className="meta" role="status">
-          {scan.status === "scanning" && "Checking recent posts against your face. This can take a minute or two."}
+          {scan.status === "scanning" &&
+            `Checked ${scan.checked} ${scan.checked === 1 ? "post" : "posts"} so far, found ${scan.found} new. ` +
+              "New posts appear below as they're found."}
           {scan.status === "done" &&
             `Checked ${scan.checked} ${scan.checked === 1 ? "post" : "posts"}, found ${scan.found} new.` +
               (scan.failed ? ` ${scan.failed} couldn’t be downloaded.` : "")}

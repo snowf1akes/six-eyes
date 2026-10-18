@@ -18,25 +18,21 @@ import zlib
 from pathlib import Path
 
 import cv2
-import torch
 from diffusers import AutoencoderKL
-from insightface.app import FaceAnalysis
-from insightface.utils.face_align import norm_crop
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+# Shared with analyze(), so training and serving crop alike and use the same VAEs.
+from crops import detector, face_crop, full_view  # noqa: E402
+from recon import VAES, vae_roundtrip  # noqa: E402
 
 SRC = Path("data/deepfakeface")
 OUT = Path("data/processed")
 MANIFEST = Path("data/manifest.csv")
-SIZE = 224
 VAL_PCT = 15
 VAE_SHARE = 0.3  # VAE fakes per pair: 3k for the full 10k run
 MAX_VAE_SIDE = 1024  # bigger photos are skipped for the VAE step so a 12 GB GPU never runs out of memory
 # DeepFakeFace folder -> generator class. The names match analyze()'s generator_guess.
 FAKES = {"text2img": "txt2img", "inpainting": "inpaint", "insight": "swap"}
-VAES = {  # name -> (Hugging Face repo, subfolder)
-    "sd15": ("stable-diffusion-v1-5/stable-diffusion-v1-5", "vae"),
-    "sdxl": ("stabilityai/sdxl-vae", None),
-    "flux": ("black-forest-labs/FLUX.1-schnell", "vae"),
-}
 
 
 def degrade(img, rng):
@@ -47,38 +43,10 @@ def degrade(img, rng):
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 
-def face_crop(img, model):
-    # The detector misses faces that fill the frame; a border fixes that (same trick as api/main.py).
-    h, w = img.shape[:2]
-    img = cv2.copyMakeBorder(img, h // 4, h // 4, w // 4, w // 4, cv2.BORDER_CONSTANT)
-    faces = model.get(img)
-    if not faces:
-        return None
-    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    return norm_crop(img, face.kps, image_size=SIZE)
-
-
-def full_view(img):
-    # Center square crop, not letterbox: every fake is 512x512 but reals come in hundreds of shapes,
-    # so letterbox bars would appear only on reals and the model would learn "bars = real".
-    h, w = img.shape[:2]
-    s = min(h, w)
-    y, x = (h - s) // 2, (w - s) // 2
-    return cv2.resize(img[y:y + s, x:x + s], (SIZE, SIZE), interpolation=cv2.INTER_AREA)
-
-
 def views(img, model, rng):
     img = degrade(img, rng)
     face = face_crop(img, model)
     return None if face is None else {"face": face, "full": full_view(img)}
-
-
-@torch.no_grad()
-def vae_roundtrip(img, vae):
-    h, w = img.shape[0] // 8 * 8, img.shape[1] // 8 * 8  # VAEs need sides divisible by 8
-    x = torch.from_numpy(img[:h, :w, ::-1].copy()).permute(2, 0, 1)[None].cuda().float() / 127.5 - 1
-    y = vae.decode(vae.encode(x).latent_dist.mode()).sample[0].clamp(-1, 1)
-    return ((y + 1) * 127.5).round().byte().permute(1, 2, 0).cpu().numpy()[:, :, ::-1].copy()
 
 
 def save(rows, out, photo, label, gen, split, name):
@@ -92,8 +60,7 @@ def save(rows, out, photo, label, gen, split, name):
 
 def main(n_pairs):
     rng = random.Random(0)
-    model = FaceAnalysis(name="buffalo_l", allowed_modules=["detection"], providers=["CPUExecutionProvider"])
-    model.prepare(ctx_id=-1, det_size=(320, 320))  # finds ~98% of these faces, ~10x faster than 640
+    model = detector()
 
     ids = sorted(p.relative_to(SRC / "wiki").as_posix() for p in (SRC / "wiki").rglob("*.jpg"))
     rng.shuffle(ids)
