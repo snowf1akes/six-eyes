@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { Check, CircleAlert, CircleCheck, ImagePlus } from "../icons";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -201,9 +202,9 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
         </div>
       )}
       <div className="actions">
-        <button className="btn btn-primary btn-lg" type="submit" disabled={busy}>
-          {busy ? "Enrolling…" : "Enroll"}
-        </button>
+        <ShimmerButton className="btn btn-lg" type="submit" disabled={busy} borderRadius="10px" background="var(--ink)">
+          {busy ? "Enrolling…" : "Get started"}
+        </ShimmerButton>
       </div>
     </form>
   );
