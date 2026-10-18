@@ -66,7 +66,35 @@ const GENERATORS: Record<string, string> = {
   inpaint: "Edited region (inpainting)",
   txt2img: "Generated from a text prompt",
   "vae-decoded": "Passed through an AI image model",
+  grok: "Edited with Grok Imagine",
+  "no-face": "No face to check",
+  "not-scored": "Not checked: the face doesn’t match you",
 };
+// Same cutoffs as the API: analyze.FAKE_THRESHOLD (95% precision on val) and main.INTIMATE_MIN.
+const FAKE_MIN = 0.742;
+const EXPLICIT_MIN = 0.5;
+type Filter = { label: string; note: string; keep: (s: Scores) => boolean; rank: (c: Case) => number };
+const FILTERS: Filter[] = [
+  { label: "All", note: "", keep: () => true, rank: (c) => c.priority },
+  {
+    label: "Likely deepfake",
+    note: "AI-made or AI-edited. The TAKE IT DOWN Act covers it only if it’s also intimate.",
+    keep: (s) => s.fake_prob >= FAKE_MIN,
+    rank: (c) => c.scores.fake_prob,
+  },
+  {
+    label: "Explicit",
+    note: "Intimate images: the TAKE IT DOWN Act covers them whether they’re real or AI-made.",
+    keep: (s) => s.nsfw >= EXPLICIT_MIN,
+    rank: (c) => c.scores.nsfw,
+  },
+  {
+    label: "Deepfake and explicit",
+    note: "AI-made intimate images, the Act’s “digital forgery” cases and the strongest to report.",
+    keep: (s) => s.fake_prob >= FAKE_MIN && s.nsfw >= EXPLICIT_MIN,
+    rank: (c) => c.scores.fake_prob * c.scores.nsfw,
+  },
+];
 const SOURCES: Record<Scores["source"], string> = {
   keyword: "Found by your name with a deepfake term",
   search: "Found by name search",
@@ -94,6 +122,7 @@ export function Cases() {
   const [filings, setFilings] = useState<Filing[]>([]);
   const [floating, setFloating] = useState<Floating | null>(null);
   const [reload, setReload] = useState(0);
+  const [filter, setFilter] = useState(0);
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
   function onConfirmed(filing: Filing, { float, form }: Helper) {
@@ -145,6 +174,8 @@ export function Cases() {
   if (load.status === "error") return <Note title="Couldn’t load found posts">{load.message}</Note>;
 
   const floated = floating && filings.find((f) => f.caseId === floating.caseId);
+  const active = FILTERS[filter];
+  const shown = load.cases.filter((c) => active.keep(c.scores)).sort((a, b) => active.rank(b) - active.rank(a));
   return (
     <>
       {floating && floated?.notice && createPortal(<FloatPanel notice={floated.notice} formOpened={!!floated.formOpened} />, floating.root)}
@@ -154,16 +185,35 @@ export function Cases() {
       <Scan user={user} onProgress={refresh} />
       {load.cases.length ? (
         <>
+          <div className="case-filters" role="group" aria-label="Show found posts">
+            {FILTERS.map((f, i) => (
+              <button
+                key={f.label}
+                type="button"
+                className={`btn btn-outline btn-sm case-filter${i === filter ? " pressed" : ""}`}
+                aria-pressed={i === filter}
+                onClick={() => setFilter(i)}
+              >
+                {f.label} · {load.cases.filter((c) => f.keep(c.scores)).length}
+              </button>
+            ))}
+          </div>
+          {active.note && <p className="meta">{active.note}</p>}
           <p className="meta">
+            {filter ? `${shown.length} of ` : ""}
             {load.cases.length} found {load.cases.length === 1 ? "post" : "posts"} · User {user}
           </p>
-          <ol className="case-list">
-            {load.cases.map((c) => (
-              <li key={c.id}>
-                <CaseCard c={c} onConfirmed={onConfirmed} />
-              </li>
-            ))}
-          </ol>
+          {shown.length ? (
+            <ol className="case-list">
+              {shown.map((c) => (
+                <li key={c.id}>
+                  <CaseCard c={c} onConfirmed={onConfirmed} />
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="lede">No found posts match this filter.</p>
+          )}
         </>
       ) : (
         <p className="lede">
@@ -298,9 +348,14 @@ function CaseCard({ c, onConfirmed }: { c: Case; onConfirmed: (f: Filing, h: Hel
               <Row label="Change across frames" value={s.frame_drift.toFixed(4)} hint="Higher means the face flickers, common in face swaps." />
             )}
           </Evidence>
-          <Evidence title="Authenticity">
+          <Evidence title="Authenticity and content">
             <Row label="Likely fake" value={pct(s.fake_prob)} />
             <Row label="Looks like" value={GENERATORS[s.generator_guess] ?? s.generator_guess} />
+            <Row
+              label="Explicit"
+              value={pct(s.nsfw)}
+              hint="From an NSFW image classifier. 50% and up counts as intimate under the TAKE IT DOWN Act."
+            />
             <Row
               label="Reconstruction distance"
               value={s.recon_score === null ? "Not measured" : s.recon_score.toFixed(3)}

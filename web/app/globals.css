@@ -866,9 +866,15 @@ svg {
   padding-top: 16px;
   border-top: 1px dashed var(--perforation);
 }
-.attest-btn.pressed {
+.attest-btn.pressed,
+.case-filter.pressed {
   background: var(--mark);
   border-color: var(--ink);
+}
+.case-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 @media (prefers-reduced-transparency: reduce) {
