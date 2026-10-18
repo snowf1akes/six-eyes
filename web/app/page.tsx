@@ -46,6 +46,7 @@ export default function Home() {
         <ShimmerButton href="/enroll" onNavigate={warp} className="btn btn-lg" borderRadius="10px" background="var(--ink)">
           Get started
         </ShimmerButton>
+        <a href="/how-it-works.html">See how it works in 30 seconds</a>
       </div>
       {warping && (
         <div className="warp">

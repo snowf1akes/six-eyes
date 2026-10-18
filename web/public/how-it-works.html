@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="How Six Eyes finds a deepfake of you on X, checks it, and takes it down, in 30 seconds.">
+<style>body { margin: 0; } [hidden] { display: none !important; }</style>
+<title>Six Eyes in 30 Seconds</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one 16:9 stage on the product's desk, sized in container units (1cqw = 1% of the stage's
+   width) so it reads the same in a screen recording, on a projector and in a browser tab. The six-step
+   rail on top is the system; under it, the step's picture on the left and its words on the right.
+   The same file runs as the 30-second video (data-mode="video") and the live pitch (data-mode="pitch").
+   Light only, as in the app. */
+:root {
+  --desk: #faf8f5;
+  --sheet: #ffffff;
+  --ink: #16181d;
+  --ink-2: #454a54;
+  --ink-3: #5e6470;
+  --mark: #b6eaff;
+  --red: #b42318;
+  --muted: #f2f3f6;
+  --hatch: #e3e6ec;
+  --sil: #c4c8d0;
+  --line: rgb(22 24 29 / 0.12);
+  --perf: rgb(22 24 29 / 0.25);
+  --glow: rgb(182 234 255 / 0.9);
+  --shadow-paper: 0 1px 0 rgb(22 24 29 / 0.04), 0 1px 3px rgb(22 24 29 / 0.09);
+  --shadow-sheet: 0 1px 0 rgb(22 24 29 / 0.04), 0 2px 4px -1px rgb(22 24 29 / 0.06), 0 22px 44px -22px rgb(22 24 29 / 0.28);
+  --display: "EB Garamond", Garamond, "Times New Roman", serif;
+  --sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, Consolas, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { background: var(--desk); color: var(--ink); font: 400 15px/1.5 var(--sans); }
+h1, h2, h3, p, dl, dd { margin: 0; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+mark { background: var(--mark); color: inherit; padding-inline: 0.15em; border-radius: 0.2em; }
+
+.app {
+  --reserve: 136px;
+  min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.app.notes-on { --reserve: 236px; }
+.app:fullscreen { --reserve: 32px; background: var(--desk); }
+.app.notes-on:fullscreen { --reserve: 128px; }
+.app.rec { --reserve: 32px; }
+.deck { width: min(100%, max(320px, calc((100vh - var(--reserve)) * 16 / 9))); display: flex; flex-direction: column; gap: 10px; }
+
+/* Stage */
+.stage { container-type: inline-size; position: relative; padding: 10px; background: var(--sheet); border-radius: 10px; box-shadow: var(--shadow-sheet); }
+.app.rec .stage { cursor: none; }
+.frame { position: relative; aspect-ratio: 16 / 9; }
+
+.rail { position: absolute; left: 3cqw; right: 3cqw; top: 3cqw; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); opacity: 0; transition: opacity 0.35s ease; }
+.rail.on { opacity: 1; }
+.rail:not(.on) { pointer-events: none; }
+.track, .fill { position: absolute; left: calc(100% / 12); top: 0.72cqw; height: 0.16cqw; }
+.track { right: calc(100% / 12); background: var(--line); }
+.fill { width: 0; background: var(--ink); }
+.node { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0.5cqw; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: center; cursor: pointer; border-radius: 0.6cqw; }
+.dot { width: 1.6cqw; height: 1.6cqw; border-radius: 50%; background: var(--sheet); border: 0.2cqw solid var(--ink-3); transition: background 0.25s, border-color 0.25s, box-shadow 0.25s; }
+.node.done .dot { background: var(--ink); border-color: var(--ink); }
+.node.active .dot { background: var(--mark); border-color: var(--ink); box-shadow: 0 0 0 0.5cqw var(--glow); }
+.nl { font-size: 1.35cqw; font-weight: 500; line-height: 1.2; color: var(--ink-3); }
+.node.done .nl, .node.active .nl { color: var(--ink); }
+.node:hover .nl { text-decoration: underline; text-underline-offset: 0.25em; }
+.nt { font: 400 1cqw/1.2 var(--mono); color: var(--ink-3); }
+
+.main { position: absolute; left: 3cqw; right: 3cqw; top: 12.5cqw; bottom: 3cqw; display: grid; grid-template-columns: 56cqw 34cqw; gap: 4cqw; align-items: center; opacity: 0; transition: opacity 0.35s ease; }
+.main.on { opacity: 1; }
+.vis { position: relative; width: 56cqw; height: 40cqw; }
+.layer { position: absolute; inset: 0; opacity: 0; transition: opacity 0.35s ease; }
+.layer.on { opacity: 1; }
+.txt { display: grid; align-items: center; }
+.tl { grid-area: 1 / 1; display: flex; flex-direction: column; gap: 1.3cqw; opacity: 0; transition: opacity 0.35s ease; }
+.tl.on { opacity: 1; }
+.eyebrow { font: 500 1.1cqw/1.2 var(--mono); color: var(--ink-3); letter-spacing: 0.06em; text-transform: uppercase; }
+.tl h2 { font: 400 3.9cqw/1.02 var(--display); letter-spacing: -0.01em; text-wrap: balance; }
+.tl p { font-size: 1.55cqw; line-height: 1.45; color: var(--ink-2); }
+.stat { align-self: flex-start; font: 400 2.4cqw/1.15 var(--display); background: var(--mark); padding: 0 0.5cqw; border-radius: 0.4cqw; font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.5cqw; }
+.chip { font: 500 1.05cqw/1.3 var(--sans); padding: 0.25cqw 0.7cqw; border-radius: 0.5cqw; background: var(--muted); color: var(--ink-2); white-space: nowrap; }
+.cap { font: 500 1.05cqw/1.3 var(--mono); color: var(--ink-3); }
+.img { border-radius: 0.6cqw; background: repeating-linear-gradient(135deg, var(--muted) 0 0.6cqw, var(--hatch) 0.6cqw 1.2cqw); }
+.pill { font: 500 1.05cqw/1.3 var(--sans); padding: 0.3cqw 0.8cqw; border-radius: 1cqw; background: var(--sheet); color: var(--ink-2); box-shadow: var(--shadow-paper); }
+
+/* 1 · Enroll */
+.selfies { position: absolute; left: 1cqw; top: 9cqw; display: grid; grid-template-columns: repeat(2, 10cqw); gap: 1.2cqw; }
+.selfie { width: 10cqw; height: 10cqw; border-radius: 0.8cqw; background: var(--muted); box-shadow: inset 0 0 0 0.12cqw var(--line); overflow: hidden; display: grid; place-items: end center; }
+.selfie svg { width: 80%; height: 80%; fill: var(--sil); }
+.arrow { position: absolute; color: var(--ink-3); }
+#en-arrow { left: 24cqw; top: 18.4cqw; width: 4.5cqw; }
+.print { position: absolute; left: 30cqw; top: 11cqw; width: 25cqw; display: flex; flex-direction: column; gap: 1cqw; }
+.bars { height: 16cqw; display: flex; align-items: center; gap: 0.16cqw; padding: 0.8cqw; border-radius: 0.8cqw; background: var(--muted); }
+.bars i { flex: 1; border-radius: 0.1cqw; background: var(--ink); }
+.bars i.neg { background: var(--ink-3); }
+.stamp { position: absolute; left: 2.2cqw; top: 17.6cqw; border: 0.3cqw solid var(--ink); border-radius: 0.4cqw; background: rgb(255 255 255 / 0.9); color: var(--ink); font: 600 1.6cqw/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 0.5cqw 1.1cqw; white-space: nowrap; }
+
+/* 2 · Search and 3 · Identify share the post grid */
+.query { position: absolute; left: 0; right: 0; top: 0; min-height: 6.4cqw; display: flex; align-items: center; gap: 1cqw; padding: 0.8cqw 1.4cqw; border-radius: 0.8cqw; background: var(--muted); font: 400 1.25cqw/1.45 var(--mono); color: var(--ink); }
+.query svg { width: 1.8cqw; height: 1.8cqw; flex: none; color: var(--ink-3); }
+.query .caret { display: inline-block; width: 0.12cqw; height: 1.5cqw; margin-left: 0.1cqw; vertical-align: -0.25cqw; background: var(--ink); }
+.posts { position: absolute; left: 0; right: 0; top: 8.5cqw; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.6cqw; }
+.post { position: relative; height: 14.6cqw; display: flex; flex-direction: column; gap: 0.8cqw; padding: 1cqw; border-radius: 0.8cqw; background: var(--sheet); box-shadow: inset 0 0 0 0.12cqw var(--line); transition: box-shadow 0.25s; }
+.post.hit { box-shadow: inset 0 0 0 0.25cqw var(--ink); }
+.ph { display: flex; align-items: center; gap: 0.6cqw; }
+.av { width: 2.2cqw; height: 2.2cqw; border-radius: 50%; background: var(--muted); box-shadow: inset 0 0 0 0.12cqw var(--line); }
+.lns { display: flex; flex-direction: column; gap: 0.45cqw; }
+.ln { display: block; height: 0.65cqw; border-radius: 0.35cqw; background: var(--muted); }
+.post .img { flex: 1; }
+.score { position: absolute; top: 0.8cqw; right: 0.8cqw; font: 500 1.2cqw/1.3 var(--mono); padding: 0.2cqw 0.6cqw; border-radius: 0.4cqw; background: var(--muted); color: var(--ink-2); }
+.score.yes { background: var(--mark); color: var(--ink); }
+.scan { position: absolute; top: 8.5cqw; height: 30.8cqw; width: 0.35cqw; margin-left: -0.17cqw; border-radius: 0.2cqw; background: var(--ink); box-shadow: 0 0 1.2cqw 0.4cqw var(--glow); opacity: 0; }
+.tagline { position: absolute; left: 0; bottom: 0; }
+
+/* 4 · Verify */
+#v-case { position: absolute; left: 0; top: 1cqw; width: 17cqw; display: flex; flex-direction: column; gap: 0.8cqw; }
+#v-case .img { height: 24cqw; display: grid; place-items: center; }
+.checks { position: absolute; left: 20cqw; right: 0; top: 0; display: flex; flex-direction: column; gap: 0.55cqw; }
+.gh { font: 600 1.35cqw/1.3 var(--sans); }
+.gh + .row { margin-top: 0.1cqw; }
+.row + .gh { margin-top: 0.6cqw; }
+.row { display: grid; grid-template-columns: 13.5cqw minmax(0, 1fr); gap: 1cqw; align-items: center; padding: 0.6cqw 0.9cqw; border-radius: 0.6cqw; background: var(--muted); }
+.rl b { display: block; font: 600 1.25cqw/1.25 var(--sans); }
+.rl span { display: block; font: 400 1cqw/1.3 var(--sans); color: var(--ink-3); }
+.rv { display: flex; align-items: center; gap: 0.8cqw; min-width: 0; font: 500 1.15cqw/1.3 var(--mono); }
+.rv.tv { font: 500 1.2cqw/1.3 var(--sans); }
+.meter { position: relative; flex: none; width: 8cqw; height: 0.8cqw; border-radius: 0.4cqw; background: var(--sheet); box-shadow: inset 0 0 0 0.1cqw var(--line); }
+.mf { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0.4cqw; background: var(--ink-2); width: calc(var(--v) * var(--g, 1) * 100%); }
+.tick { position: absolute; top: -0.4cqw; bottom: -0.4cqw; left: calc(var(--t) * 100%); width: 0.22cqw; margin-left: -0.11cqw; border-radius: 0.1cqw; background: var(--ink); }
+
+/* 5 · You decide */
+#dcard { position: absolute; left: 6cqw; top: 1cqw; width: 44cqw; display: flex; flex-direction: column; gap: 1.4cqw; padding: 1.6cqw; border-radius: 1cqw; background: var(--sheet); box-shadow: var(--shadow-sheet), inset 0 0 0 0.12cqw var(--line); }
+.dtop { display: flex; justify-content: space-between; align-items: center; gap: 1cqw; font: 500 1.15cqw/1.3 var(--mono); color: var(--ink-3); }
+.dbody { display: grid; grid-template-columns: 15cqw minmax(0, 1fr); gap: 1.6cqw; }
+.dbody .img { height: 18cqw; display: grid; place-items: center; }
+.ev { display: flex; flex-direction: column; justify-content: center; gap: 0.8cqw; }
+.ev div { display: flex; justify-content: space-between; gap: 1cqw; padding-bottom: 0.5cqw; border-bottom: 0.1cqw dashed var(--perf); font-size: 1.25cqw; }
+.ev dt { color: var(--ink-2); }
+.ev dd { font: 500 1.2cqw var(--mono); }
+.dbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2cqw; }
+.dbtn { padding: 0.9cqw; border-radius: 0.7cqw; box-shadow: inset 0 0 0 0.15cqw var(--ink); text-align: center; font: 600 1.35cqw/1.3 var(--sans); transition: background 0.15s, color 0.15s; }
+.dbtn.on { background: var(--ink); color: var(--sheet); }
+.dconf { align-self: flex-start; padding: 0.4cqw 0.9cqw; border-radius: 0.5cqw; background: var(--mark); font: 600 1.25cqw/1.3 var(--sans); }
+.cursor { position: absolute; left: 0; top: 0; width: 2.6cqw; height: 2.6cqw; transform-origin: 17% 8%; opacity: 0; }
+.cursor svg { display: block; width: 100%; height: 100%; }
+
+/* 6 · Take down */
+.tk { position: absolute; inset: 0; display: flex; align-items: center; gap: 1.2cqw; }
+.tcol { display: flex; flex-direction: column; gap: 1cqw; }
+#tk-notice { width: 15cqw; }
+#tk-clock { width: 12cqw; align-items: center; text-align: center; }
+.out { width: 18cqw; }
+.doc { height: 19cqw; display: flex; flex-direction: column; gap: 0.9cqw; padding: 1.4cqw; border-radius: 0.6cqw; background: var(--sheet); box-shadow: var(--shadow-paper), inset 0 0 0 0.12cqw var(--line); }
+.doc b { font: 600 1.15cqw/1.3 var(--sans); }
+.doc i { display: block; height: 0.6cqw; border-radius: 0.3cqw; background: var(--muted); transform-origin: left; }
+.doc i.short { width: 60%; }
+.sig { margin-top: auto; padding-top: 0.4cqw; border-top: 0.1cqw solid var(--ink-3); font: italic 400 1.6cqw/1.2 var(--display); }
+.tarrow { width: 3cqw; flex: none; color: var(--ink-3); }
+.ring { position: relative; width: 12cqw; height: 12cqw; }
+.ring svg { display: block; width: 100%; height: 100%; }
+.ring b { position: absolute; inset: 0; display: grid; place-items: center; font: 400 2.6cqw/1 var(--display); font-variant-numeric: tabular-nums; }
+.o { display: flex; align-items: center; gap: 0.6cqw; padding: 0.7cqw 0.9cqw; border-radius: 0.6cqw; background: var(--muted); font: 600 1.2cqw/1.25 var(--sans); }
+.o svg { width: 1.5cqw; height: 1.5cqw; flex: none; }
+.bubble { padding: 0.9cqw 1.1cqw; border-radius: 1.2cqw 1.2cqw 1.2cqw 0.3cqw; background: var(--mark); font-size: 1.15cqw; line-height: 1.35; }
+
+/* Full slides: title, data, model choice, close */
+.slide { position: absolute; left: 3cqw; right: 3cqw; top: 3cqw; bottom: 3cqw; display: flex; flex-direction: column; justify-content: center; gap: 1.6cqw; opacity: 0; transition: opacity 0.35s ease; pointer-events: none; }
+.slide.below { top: 12.5cqw; }
+.slide.on { opacity: 1; }
+.slide h1 { font: 400 9cqw/0.95 var(--display); letter-spacing: -0.02em; }
+.slide.below h1 { font-size: 7cqw; }
+.slide h2 { font: 400 4.2cqw/1.05 var(--display); letter-spacing: -0.01em; text-wrap: balance; }
+.slide .lede { max-width: 64cqw; font-size: 2.1cqw; line-height: 1.35; color: var(--ink-2); }
+.hook { max-width: 66cqw; padding-top: 1.6cqw; border-top: 0.12cqw dashed var(--perf); font-size: 1.8cqw; line-height: 1.45; }
+.statline { font: 500 1.3cqw/1.4 var(--mono); color: var(--ink-2); }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.4cqw; }
+.tile { display: flex; flex-direction: column; gap: 0.5cqw; padding: 1.6cqw 1.8cqw; border-radius: 0.8cqw; background: var(--muted); }
+.tile b { font: 400 4.6cqw/1 var(--display); font-variant-numeric: tabular-nums; }
+.tile p { font-size: 1.35cqw; line-height: 1.35; color: var(--ink-2); }
+.tile.win b { align-self: flex-start; padding: 0 0.5cqw; border-radius: 0.4cqw; background: var(--mark); }
+.chart svg { display: block; width: 100%; height: auto; max-height: 30cqw; }
+.ftick { font: 400 12px var(--sans); fill: var(--ink-3); }
+.flbl { font: 500 12px var(--sans); fill: var(--ink); }
+.fttl { font: 600 14px var(--sans); fill: var(--ink); }
+.takeaway { max-width: 82cqw; font-size: 1.5cqw; line-height: 1.45; color: var(--ink-2); }
+
+/* Controls under the stage */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.cgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; flex: 1 1 auto; min-width: 0; }
+.app[data-mode="video"] .pitch-only, .app[data-mode="pitch"] .video-only { display: none; }
+.btn { font: 500 14px/1.2 var(--sans); color: var(--ink); background: var(--sheet); border: 1px solid var(--perf); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.btn:hover { background: var(--muted); }
+.btn.primary { background: var(--ink); color: var(--sheet); border-color: var(--ink); }
+.btn.primary:hover { background: var(--ink-2); }
+.btn:disabled { color: var(--ink-3); background: var(--muted); border-color: var(--line); cursor: default; }
+#v-scrub { flex: 1 1 160px; min-width: 120px; accent-color: var(--ink); }
+.time { font: 500 13px var(--mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.hint { margin-left: auto; font-size: 13px; color: var(--ink-3); }
+.narrow { display: none; font-size: 13px; color: var(--ink-3); }
+.notes { padding: 12px 16px; border-radius: 8px; background: var(--sheet); box-shadow: var(--shadow-paper); font-size: 17px; line-height: 1.5; }
+.notes::before { content: "Say: "; font-weight: 600; }
+.app.rec .controls, .app.rec .notes, .app:fullscreen .controls, .app.rec .narrow { display: none; }
+@media (max-width: 600px) { .narrow { display: block; } .hint { display: none; } }
+@media (prefers-reduced-motion: reduce) { .rail, .main, .layer, .tl, .slide, .dot, .post, .dbtn { transition: none; } }
+</style>
+</head>
+<body>
+<main class="app" data-mode="video">
+  <div class="deck">
+    <div class="stage" id="stage" role="region" aria-label="Six Eyes system walkthrough">
+      <div class="frame">
+
+        <div class="rail on" data-show="enroll search identify verify decide takedown close">
+          <span class="track"></span><span class="fill" id="fill"></span>
+          <button type="button" class="node done" data-key="enroll"><span class="dot"></span><span class="nl">Enroll</span><span class="nt">InsightFace</span></button>
+          <button type="button" class="node done" data-key="search"><span class="dot"></span><span class="nl">Search X</span><span class="nt">X API v2</span></button>
+          <button type="button" class="node done" data-key="identify"><span class="dot"></span><span class="nl">Identify</span><span class="nt">ArcFace</span></button>
+          <button type="button" class="node done" data-key="verify"><span class="dot"></span><span class="nl">Verify</span><span class="nt">DINOv3 · C2PA · PDQ</span></button>
+          <button type="button" class="node done" data-key="decide"><span class="dot"></span><span class="nl">You decide</span><span class="nt">Next.js</span></button>
+          <button type="button" class="node done" data-key="takedown"><span class="dot"></span><span class="nl">Take down</span><span class="nt">Factory · Photon</span></button>
+        </div>
+
+        <div class="main" data-show="enroll search identify verify decide takedown">
+          <div class="vis" id="vis">
+
+            <div class="layer" data-show="enroll">
+              <div class="selfies">
+                <div class="selfie"><svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="15" r="7.5"/><path d="M5 40c0-9 6.7-14 15-14s15 5 15 14z"/></svg></div>
+                <div class="selfie"><svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="15" r="7.5"/><path d="M5 40c0-9 6.7-14 15-14s15 5 15 14z"/></svg></div>
+                <div class="selfie"><svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="15" r="7.5"/><path d="M5 40c0-9 6.7-14 15-14s15 5 15 14z"/></svg></div>
+                <div class="selfie"><svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="15" r="7.5"/><path d="M5 40c0-9 6.7-14 15-14s15 5 15 14z"/></svg></div>
+              </div>
+              <svg class="arrow" id="en-arrow" viewBox="0 0 40 16" aria-hidden="true"><path d="M2 8h32M28 2l7 6-7 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <div class="print">
+                <div class="bars" id="en-bars" aria-hidden="true"></div>
+                <span class="cap" id="en-cap">Face print · 512 numbers</span>
+              </div>
+              <div class="stamp" id="en-stamp">Photos deleted</div>
+            </div>
+
+            <div class="layer" data-show="search identify">
+              <div class="query">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                <span><span id="q-text"></span><i class="caret" id="q-caret"></i></span>
+              </div>
+              <div class="posts">
+                <div class="post" data-hit="0"><div class="ph"><i class="av"></i><span class="lns"><i class="ln" style="width:6cqw"></i><i class="ln" style="width:4cqw"></i></span></div><div class="img"></div><b class="score">0.079</b></div>
+                <div class="post" data-hit="1"><div class="ph"><i class="av"></i><span class="lns"><i class="ln" style="width:7cqw"></i><i class="ln" style="width:3.5cqw"></i></span></div><div class="img"></div><b class="score yes">0.986 · you</b></div>
+                <div class="post" data-hit="0"><div class="ph"><i class="av"></i><span class="lns"><i class="ln" style="width:5cqw"></i><i class="ln" style="width:4.5cqw"></i></span></div><div class="img"></div><b class="score">0.12</b></div>
+                <div class="post" data-hit="0"><div class="ph"><i class="av"></i><span class="lns"><i class="ln" style="width:6.5cqw"></i><i class="ln" style="width:3cqw"></i></span></div><div class="img"></div><b class="score">0.05</b></div>
+                <div class="post" data-hit="0"><div class="ph"><i class="av"></i><span class="lns"><i class="ln" style="width:5.5cqw"></i><i class="ln" style="width:4cqw"></i></span></div><div class="img"></div><b class="score">0.21</b></div>
+                <div class="post" data-hit="1"><div class="ph"><i class="av"></i><span class="lns"><i class="ln" style="width:7cqw"></i><i class="ln" style="width:4cqw"></i></span></div><div class="img"></div><b class="score yes">0.985 · you</b></div>
+              </div>
+              <div class="scan" id="scan"></div>
+            </div>
+
+            <div class="layer" data-show="verify">
+              <div id="v-case"><div class="img"><span class="pill">Blurred</span></div><span class="cap">2 copies of one image</span></div>
+              <div class="checks" id="checks">
+                <h3 class="gh">Is it fake?</h3>
+                <div class="row"><div class="rl"><b>Detector</b><span>DINOv3 · face + whole image</span></div><div class="rv"><span class="meter"><i class="mf" style="--v:0.81"></i><i class="tick" style="--t:0.742"></i></span>0.81 ≥ 0.742</div></div>
+                <div class="row"><div class="rl"><b>Reconstruction</b><span>Stable Diffusion autoencoder</span></div><div class="rv tv">rebuilds almost unchanged</div></div>
+                <div class="row"><div class="rl"><b>C2PA</b><span>signed AI label in the file</span></div><div class="rv tv">no label found</div></div>
+                <h3 class="gh">Is it harmful?</h3>
+                <div class="row"><div class="rl"><b>Intimate</b><span>NSFW score, the law's scope</span></div><div class="rv"><span class="meter"><i class="mf" style="--v:0.93"></i><i class="tick" style="--t:0.5"></i></span>0.93 ≥ 0.5</div></div>
+                <div class="row"><div class="rl"><b>Context</b><span>hashtags, links, the poster</span></div><div class="rv tv">#deepfake, sales link, 6-day-old account</div></div>
+                <div class="row"><div class="rl"><b>Copies</b><span>PDQ fingerprint</span></div><div class="rv tv">2 posts, 8 bits apart</div></div>
+              </div>
+              <span class="cap tagline" id="v-example">Example case</span>
+            </div>
+
+            <div class="layer" data-show="decide">
+              <div id="dcard">
+                <div class="dtop"><span>Example case · 2 copies</span><span class="chip">Highest priority</span></div>
+                <div class="dbody">
+                  <div class="img"><span class="pill">Blurred · Reveal</span></div>
+                  <dl class="ev">
+                    <div><dt>Face match</dt><dd>0.986</dd></div>
+                    <div><dt>Detector</dt><dd>0.81</dd></div>
+                    <div><dt>Intimate</dt><dd>0.93</dd></div>
+                    <div><dt>Context</dt><dd>flagged</dd></div>
+                    <div><dt>Copies</dt><dd>2</dd></div>
+                  </dl>
+                </div>
+                <div class="dbtns"><span class="dbtn" id="d-b1">This is me</span><span class="dbtn" id="d-b2">Not consensual</span></div>
+                <span class="dconf" id="d-conf">Confirmed · both copies</span>
+              </div>
+              <span class="cursor" id="d-cursor"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2l15 10.5-6.6 1.2 3.9 7.3-3 1.6-3.9-7.4L4 20z" fill="var(--ink)" stroke="var(--sheet)" stroke-width="1.5" stroke-linejoin="round"/></svg></span>
+            </div>
+
+            <div class="layer" data-show="takedown">
+              <div class="tk">
+                <div class="tcol" id="tk-notice">
+                  <div class="doc"><b>TAKE IT DOWN notice</b><i></i><i></i><i></i><i class="short"></i><span class="sig" id="tk-sig">e-signed</span></div>
+                  <span class="cap">Drafted by Factory Droid · test mode</span>
+                </div>
+                <svg class="tarrow" viewBox="0 0 40 16" aria-hidden="true"><path d="M2 8h32M28 2l7 6-7 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <div class="tcol" id="tk-clock">
+                  <div class="ring">
+                    <svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="42" fill="none" stroke="var(--muted)" stroke-width="9"/><circle id="tk-ring" cx="50" cy="50" r="42" fill="none" stroke="var(--ink)" stroke-width="9" stroke-linecap="round" stroke-dasharray="263.9" stroke-dashoffset="0" transform="rotate(-90 50 50)"/></svg>
+                    <b id="tk-h">48 h</b>
+                  </div>
+                  <span class="cap">Checks X again</span>
+                </div>
+                <svg class="tarrow" viewBox="0 0 40 16" aria-hidden="true"><path d="M2 8h32M28 2l7 6-7 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <div class="tcol out">
+                  <div class="o" id="tk-ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Removed: resolved</div>
+                  <div class="o" id="tk-esc"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Still up: FTC report</div>
+                  <div class="bubble" id="tk-bub">Six Eyes: the post is still up after 48 hours. Your FTC report is ready.</div>
+                  <span class="cap" id="tk-cap">Text via Photon</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="txt">
+            <div class="tl" data-show="enroll">
+              <span class="eyebrow">1 · Enroll</span>
+              <h2>Enroll once</h2>
+              <p>3–5 selfies become a 512-number face print. Each selfie has to match the others, and the photos are deleted.</p>
+              <span class="stat">0 photos kept</span>
+              <div class="chips"><span class="chip">InsightFace</span><span class="chip">ArcFace</span></div>
+            </div>
+            <div class="tl" data-show="search">
+              <span class="eyebrow">2 · Search X</span>
+              <h2>Search X</h2>
+              <p>X can't search by image, so we search the words around it: the user's name and handles, plus 12 deepfake terms. Then we face-match every image.</p>
+              <span class="stat">3 queries · $0.005 a post</span>
+              <div class="chips"><span class="chip">X API v2</span><span class="chip">only new posts</span></div>
+            </div>
+            <div class="tl" data-show="identify">
+              <span class="eyebrow">3 · Identify</span>
+              <h2>Is it you?</h2>
+              <p>ArcFace compares every face to the face print. Below 0.3 we drop it, so the heavy models only run on matches.</p>
+              <span class="stat">0.986 you · 0.079 a stranger</span>
+              <div class="chips"><span class="chip">InsightFace buffalo_l</span></div>
+            </div>
+            <div class="tl" data-show="verify">
+              <span class="eyebrow">4 · Verify</span>
+              <h2>Is it fake? Is it harmful?</h2>
+              <p>Three checks for fake: our DINOv3 detector, reconstruction through Stable Diffusion's autoencoder, and C2PA labels. Three for harm: intimate content, the post's context, and copies. None decides alone.</p>
+              <span class="stat">cutoff 0.742 · 95% precision</span>
+              <div class="chips"><span class="chip">DINOv3</span><span class="chip">SD VAE</span><span class="chip">C2PA</span><span class="chip">PDQ</span></div>
+            </div>
+            <div class="tl" data-show="decide">
+              <span class="eyebrow">5 · You decide</span>
+              <h2>You decide</h2>
+              <p>Matches stay blurred until you choose to look. Nothing is filed until you confirm it's you and it isn't consensual.</p>
+              <span class="stat">1 confirm covers every copy</span>
+              <div class="chips"><span class="chip">Next.js on Vercel</span></div>
+            </div>
+            <div class="tl" data-show="takedown">
+              <span class="eyebrow">6 · Take down</span>
+              <h2>Take it down</h2>
+              <p>A case worker drafts the TAKE IT DOWN notice and checks X again at 48 hours. If the post is still up, it prepares the FTC report and texts you.</p>
+              <span class="stat">48 hours, by law</span>
+              <div class="chips"><span class="chip">Factory Droid</span><span class="chip">Photon</span><span class="chip">test mode</span></div>
+            </div>
+          </div>
+        </div>
+
+        <section class="slide" data-show="title">
+          <span class="eyebrow">HackHarvard 2026</span>
+          <h1>Six Eyes</h1>
+          <p class="lede">Finds deepfakes of you on X, checks them, and takes them down when you say so.</p>
+          <p class="hook">Since May 2026, the TAKE IT DOWN Act gives platforms <mark>48 hours</mark> to remove a reported intimate deepfake. Finding it and filing the notice is still up to the victim.</p>
+        </section>
+
+        <section class="slide" data-show="data">
+          <span class="eyebrow">Behind the detector</span>
+          <h2>The work behind the detector</h2>
+          <div class="tiles">
+            <div class="tile"><b>23,000</b><p>training and validation images</p></div>
+            <div class="tile"><b>3,000</b><p>fakes we generated by passing real photos through 3 autoencoders</p></div>
+            <div class="tile"><b>100 + 50</b><p>consented team photos and hand-made Grok Imagine edits; one teammate held out entirely</p></div>
+            <div class="tile"><b>5</b><p>detectors benchmarked on a teammate they never saw</p></div>
+            <div class="tile"><b>~120</b><p>papers reviewed to pick the methods</p></div>
+            <div class="tile win"><b>0 of 49</b><p>of the held-out teammate's real photos falsely flagged by the model we shipped</p></div>
+          </div>
+        </section>
+
+        <section class="slide" data-show="shipped">
+          <span class="eyebrow">Model choice</span>
+          <h2>We shipped the model that generalized</h2>
+          <div class="chart">
+            <svg viewBox="0 0 760 270" role="img" aria-label="Left: LoRA validation AUC rises from 0.909 to 0.928 over three epochs, above the frozen probe's 0.887. Right: on the held-out teammate's Grok edits, the probe scores 0.662 and 0.686 with Grok in training; LoRA scores 0.695 and drops to 0.514 with Grok in training.">
+              <text x="40" y="20" class="fttl">Fine-tuning wins the benchmark (validation AUC)</text>
+              <line x1="40" y1="220" x2="340" y2="220" stroke="var(--ink)" stroke-width="1"/>
+              <line x1="40" y1="45.0" x2="340" y2="45.0" stroke="var(--line)"/><text x="34" y="49.0" class="ftick" text-anchor="end">0.95</text>
+              <line x1="40" y1="132.5" x2="340" y2="132.5" stroke="var(--line)"/><text x="34" y="136.5" class="ftick" text-anchor="end">0.90</text>
+              <text x="34" y="224" class="ftick" text-anchor="end">0.85</text>
+              <line x1="40" y1="155.3" x2="340" y2="155.3" stroke="var(--ink-3)" stroke-dasharray="4 3"/>
+              <text x="336" y="171" class="ftick" text-anchor="end">frozen DINOv3 probe 0.887</text>
+              <polyline points="90,116.8 190,87.0 290,83.5" fill="none" stroke="var(--ink)" stroke-width="2"/>
+              <circle cx="90" cy="116.8" r="5" fill="var(--ink)"/><text x="90" y="106" class="flbl" text-anchor="middle">0.909</text>
+              <circle cx="190" cy="87.0" r="5" fill="var(--ink)"/><text x="190" y="76" class="flbl" text-anchor="middle">0.926</text>
+              <circle cx="290" cy="83.5" r="5" fill="var(--ink)"/><text x="290" y="72" class="flbl" text-anchor="middle">0.928</text>
+              <text x="90" y="240" class="ftick" text-anchor="middle">epoch 1</text><text x="190" y="240" class="ftick" text-anchor="middle">epoch 2</text><text x="290" y="240" class="ftick" text-anchor="middle">epoch 3</text>
+              <text x="420" y="20" class="fttl">…and loses on a person it never saw (Grok AUC)</text>
+              <line x1="420" y1="220" x2="740" y2="220" stroke="var(--ink)" stroke-width="1"/>
+              <line x1="420" y1="110.6" x2="740" y2="110.6" stroke="var(--ink-3)" stroke-dasharray="4 3"/><text x="414" y="114.6" class="ftick" text-anchor="end">chance 0.5</text>
+              <text x="414" y="224" class="ftick" text-anchor="end">0</text><text x="414" y="49" class="ftick" text-anchor="end">0.8</text>
+              <line x1="420" y1="45" x2="740" y2="45" stroke="var(--line)"/>
+              <rect x="438" y="75.2" width="56" height="144.8" fill="var(--ink-3)"/><text x="466" y="68" class="flbl" text-anchor="middle">0.662</text>
+              <rect x="514" y="70.0" width="56" height="150.0" fill="var(--mark)" stroke="var(--ink)" stroke-width="1"/><text x="542" y="63" class="flbl" text-anchor="middle">0.686</text>
+              <rect x="590" y="68.0" width="56" height="152.0" fill="var(--ink-3)"/><text x="618" y="61" class="flbl" text-anchor="middle">0.695</text>
+              <rect x="666" y="107.6" width="56" height="112.4" fill="var(--ink)"/><text x="694" y="100" class="flbl" text-anchor="middle">0.514</text>
+              <text x="466" y="238" class="ftick" text-anchor="middle">probe</text><text x="542" y="238" class="ftick" text-anchor="middle">probe + Grok</text>
+              <text x="618" y="238" class="ftick" text-anchor="middle">LoRA</text><text x="694" y="238" class="ftick" text-anchor="middle">LoRA + Grok</text>
+              <text x="542" y="256" class="ftick" text-anchor="middle">ships</text>
+              <text x="694" y="256" class="ftick" text-anchor="middle" style="fill:var(--red)">92% real flagged</text>
+            </svg>
+          </div>
+          <p class="takeaway">Given 25 Grok images, the 2.36M-weight LoRA memorized "a teammate's phone photo" and flagged 92% of the held-out teammate's real photos. The 2,049-weight probe improved and flagged none, so it ships, and the user's confirmation makes the final call.</p>
+        </section>
+
+        <section class="slide below on" data-show="close">
+          <h1>Six Eyes</h1>
+          <p class="lede">Finds deepfakes of you on X, checks them, and takes them down when you say so.</p>
+          <p class="statline">23,000 training images · 150 team photos · 5 detectors tested · 0 of 49 real photos falsely flagged</p>
+          <div class="chips"><span class="chip">FastAPI on Modal</span><span class="chip">Next.js on Vercel</span><span class="chip">X API v2</span><span class="chip">InsightFace</span><span class="chip">DINOv3</span><span class="chip">Factory Droid</span><span class="chip">Photon</span><span class="chip">Grok Imagine</span></div>
+        </section>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="cgroup video-only">
+        <button type="button" class="btn primary" id="v-play">Play 30 s</button>
+        <button type="button" class="btn" id="v-restart">Restart</button>
+        <input type="range" id="v-scrub" min="0" max="30000" step="50" value="30000" aria-label="Position in the 30-second walkthrough">
+        <span class="time" id="v-time">0:30 / 0:30</span>
+        <button type="button" class="btn" id="v-rec">Recording view</button>
+        <span class="hint">Space plays · ← → step · Recording view hides these controls; Esc exits</span>
+      </div>
+      <div class="cgroup pitch-only">
+        <button type="button" class="btn" id="p-prev" aria-label="Previous slide">←</button>
+        <button type="button" class="btn primary" id="p-next" aria-label="Next slide">→</button>
+        <span class="time" id="p-count">1 / 10</span>
+        <button type="button" class="btn" id="p-notes" aria-pressed="false">Notes</button>
+        <button type="button" class="btn" id="p-fs">Full screen</button>
+        <span class="hint">→ or Space next · ← back · N notes · F full screen · click a step to jump</span>
+      </div>
+    </div>
+    <p class="notes" id="notes" hidden></p>
+    <p class="narrow">Turn your phone sideways or use full screen for the best view.</p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const app = document.querySelector(".app");
+  const MODE = app.dataset.mode;
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => [...document.querySelectorAll(s)];
+  const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const span = (p, a, b) => clamp((p - a) / (b - a));
+  const ease = (x) => 1 - Math.pow(1 - x, 3);
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // The six steps on one 30-second clock (ms); 28–30 s is the closing card.
+  const SCENES = [
+    { key: "enroll", a: 0, b: 4200 },
+    { key: "search", a: 4200, b: 8800 },
+    { key: "identify", a: 8800, b: 13200 },
+    { key: "verify", a: 13200, b: 18600 },
+    { key: "decide", a: 18600, b: 23000 },
+    { key: "takedown", a: 23000, b: 28000 },
+  ];
+  const END = 30000;
+  const local = (t, k) => span(t, SCENES[k].a, SCENES[k].b);
+  let t = END, cur = "close";
+
+  // 1 · Enroll: the face print's bars use fixed values, so every run looks the same.
+  const barBox = $("#en-bars"), NB = 48;
+  for (let i = 0; i < NB; i++) {
+    const v = (Math.sin(i * 1.7) + Math.sin(i * 0.53 + 2)) / 2;
+    const b = document.createElement("i");
+    b.style.height = (14 + 86 * Math.abs(v)).toFixed(1) + "%";
+    if (v < 0) b.className = "neg";
+    barBox.append(b);
+  }
+  const bars = [...barBox.children];
+  const selfies = $$(".selfie"), tilt = [-3, 2, 1.5, -2];
+  const enArrow = $("#en-arrow"), enCap = $("#en-cap"), stamp = $("#en-stamp");
+  function renderEnroll(p) {
+    const fade = 1 - 0.8 * span(p, 0.62, 0.78);
+    selfies.forEach((el, j) => {
+      const s = ease(span(p, 0.02 + j * 0.05, 0.16 + j * 0.05));
+      el.style.opacity = s * fade;
+      el.style.transform = `translateY(${(1 - s) * 2}cqw) rotate(${tilt[j]}deg)`;
+    });
+    enArrow.style.opacity = span(p, 0.22, 0.3);
+    bars.forEach((b, i) => { b.style.transform = `scaleY(${ease(span(p, 0.25 + (i / NB) * 0.3, 0.32 + (i / NB) * 0.3))})`; });
+    enCap.style.opacity = span(p, 0.5, 0.6);
+    const k = span(p, 0.64, 0.72);
+    stamp.style.opacity = k;
+    stamp.style.transform = `rotate(-8deg) scale(${1.3 - 0.3 * ease(k)})`;
+  }
+
+  // 2 · Search types the query and fills the grid; 3 · Identify scans it and drops non-matches.
+  const Q = '("Jamie Park" OR @jamiepark OR to:jamiepark) (has:images OR has:videos) -is:retweet';
+  const qText = $("#q-text"), caret = $("#q-caret"), scan = $("#scan"), posts = $$(".post");
+  function renderPosts(ps, pi) {
+    qText.textContent = Q.slice(0, Math.round(span(ps, 0.02, 0.45) * Q.length));
+    caret.style.opacity = ps < 0.5 ? 1 : 0;
+    const x = span(pi, 0.02, 0.55) * 56;
+    scan.style.left = x + "cqw";
+    scan.style.opacity = pi > 0.005 && pi < 0.58 ? 1 : 0;
+    posts.forEach((el, j) => {
+      const s = ease(span(ps, 0.42 + j * 0.07, 0.56 + j * 0.07));
+      const hit = el.dataset.hit === "1";
+      const cx = (j % 3) * 19.2 + 8.8;
+      el.style.opacity = s * (hit ? 1 : 1 - 0.75 * span(pi, 0.6, 0.78));
+      el.style.transform = `translateY(${(1 - s) * 1.5}cqw)`;
+      el.classList.toggle("hit", hit && pi >= 0.6);
+      el.querySelector(".score").style.opacity = span(x, cx - 0.5, cx + 1.5);
+    });
+  }
+
+  // 4 · Verify: the evidence rows come in one by one.
+  const vcase = $("#v-case"), rows = $$("#checks .row"), heads = $$("#checks .gh"), vEx = $("#v-example");
+  function renderVerify(p) {
+    const s = ease(span(p, 0, 0.12));
+    vcase.style.opacity = s;
+    vcase.style.transform = `translateX(${(s - 1) * 1.5}cqw)`;
+    heads[0].style.opacity = span(p, 0.06, 0.14);
+    heads[1].style.opacity = span(p, 0.36, 0.44);
+    rows.forEach((r, i) => {
+      const a = 0.08 + i * 0.1, k = ease(span(p, a, a + 0.1));
+      r.style.opacity = k;
+      r.style.transform = `translateX(${(1 - k) * 1.2}cqw)`;
+      r.style.setProperty("--g", ease(span(p, a + 0.06, a + 0.22)).toFixed(3));
+    });
+    vEx.style.opacity = span(p, 0.1, 0.2);
+  }
+
+  // 5 · You decide: a cursor presses the two buttons.
+  const vis = $("#vis"), dcard = $("#dcard"), b1 = $("#d-b1"), b2 = $("#d-b2"), dconf = $("#d-conf"), cursor = $("#d-cursor");
+  function renderDecide(p) {
+    const s = ease(span(p, 0, 0.12));
+    dcard.style.opacity = s;
+    dcard.style.transform = `translateY(${(1 - s) * 1.5}cqw)`;
+    const v = vis.getBoundingClientRect();
+    const mid = (el) => { const r = el.getBoundingClientRect(); return [r.left - v.left + r.width / 2, r.top - v.top + r.height / 2]; };
+    const S = [v.width * 0.94, v.height * 0.97], A = mid(b1), B = mid(b2);
+    const m1 = ease(span(p, 0.15, 0.35)), m2 = ease(span(p, 0.42, 0.6));
+    const x = S[0] + (A[0] - S[0]) * m1 + (B[0] - A[0]) * m2;
+    const y = S[1] + (A[1] - S[1]) * m1 + (B[1] - A[1]) * m2;
+    const w = cursor.offsetWidth;
+    cursor.style.left = (x - 0.17 * w).toFixed(1) + "px";
+    cursor.style.top = (y - 0.08 * w).toFixed(1) + "px";
+    const press = (p > 0.36 && p < 0.4) || (p > 0.6 && p < 0.64);
+    cursor.style.transform = press ? "scale(0.82)" : "none";
+    cursor.style.opacity = span(p, 0.12, 0.16) * (1 - span(p, 0.8, 0.88));
+    b1.classList.toggle("on", p >= 0.38);
+    b2.classList.toggle("on", p >= 0.62);
+    dconf.style.opacity = span(p, 0.68, 0.76);
+  }
+
+  // 6 · Take down: notice, the 48-hour clock, the two outcomes.
+  const tkNotice = $("#tk-notice"), docLines = $$("#tk-notice .doc i"), sig = $("#tk-sig"), arrows = $$(".tarrow");
+  const tkClock = $("#tk-clock"), ring = $("#tk-ring"), hrs = $("#tk-h");
+  const ok = $("#tk-ok"), esc = $("#tk-esc"), bub = $("#tk-bub"), tkCap = $("#tk-cap");
+  function renderTake(p) {
+    tkNotice.style.opacity = ease(span(p, 0, 0.12));
+    docLines.forEach((l, i) => { l.style.transform = `scaleX(${ease(span(p, 0.05 + i * 0.04, 0.15 + i * 0.04))})`; });
+    sig.style.opacity = span(p, 0.24, 0.3);
+    arrows[0].style.opacity = span(p, 0.28, 0.33);
+    tkClock.style.opacity = span(p, 0.3, 0.36);
+    const f = ease(span(p, 0.34, 0.6));
+    ring.style.strokeDashoffset = (263.9 * (1 - f)).toFixed(1);
+    hrs.textContent = Math.round(48 * f) + " h";
+    arrows[1].style.opacity = span(p, 0.6, 0.64);
+    ok.style.opacity = span(p, 0.64, 0.7);
+    esc.style.opacity = span(p, 0.72, 0.78);
+    bub.style.opacity = span(p, 0.8, 0.88);
+    tkCap.style.opacity = span(p, 0.8, 0.88);
+  }
+
+  const nodes = $$(".node"), fill = $("#fill");
+  function render() {
+    renderEnroll(local(t, 0));
+    renderPosts(local(t, 1), local(t, 2));
+    renderVerify(local(t, 3));
+    renderDecide(local(t, 4));
+    renderTake(local(t, 5));
+    const k = SCENES.findIndex((s) => s.key === cur);
+    nodes.forEach((n, i) => {
+      n.classList.toggle("done", cur === "close" || (k >= 0 && i < k));
+      n.classList.toggle("active", i === k);
+      if (i === k) n.setAttribute("aria-current", "step"); else n.removeAttribute("aria-current");
+    });
+    const f = cur === "close" ? 1 : k < 0 ? 0 : Math.min(1, (k + local(t, k)) / 5);
+    fill.style.width = `calc((100% - 100% / 6) * ${f.toFixed(4)})`;
+  }
+  function show(name) {
+    cur = name;
+    $$("[data-show]").forEach((el) => el.classList.toggle("on", el.dataset.show.split(" ").includes(name)));
+  }
+  const fullscreen = () => { try { app.requestFullscreen?.()?.catch?.(() => {}); } catch (e) {} };
+  const leaveFullscreen = () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); };
+
+  if (MODE === "video") {
+    const playBtn = $("#v-play"), scrub = $("#v-scrub"), time = $("#v-time");
+    let playing = false, t0 = 0, from = 0, raf = 0, hold = 0;
+    const sceneAt = (x) => (x >= SCENES[5].b ? "close" : SCENES.filter((s) => x >= s.a).pop().key);
+    const fmt = (x) => "0:" + String(Math.floor(x / 1000)).padStart(2, "0");
+    const label = () => { playBtn.textContent = playing ? "Pause" : t >= END ? "Play 30 s" : "Play"; };
+    function setT(x) {
+      t = clamp(x, 0, END);
+      const name = sceneAt(t);
+      if (name !== cur) show(name);
+      render();
+      scrub.value = String(Math.round(t));
+      time.textContent = `${fmt(t)} / 0:30`;
+    }
+    function tick(now) {
+      if (!playing) return;
+      setT(from + now - t0);
+      if (t >= END) pause(); else raf = requestAnimationFrame(tick);
+    }
+    function play() {
+      if (t >= END) setT(0);
+      playing = true; from = t; t0 = performance.now(); label();
+      raf = requestAnimationFrame(tick);
+    }
+    function pause() { playing = false; cancelAnimationFrame(raf); label(); }
+    function seek(x) { setT(x); if (playing) { from = t; t0 = performance.now(); } label(); }
+    function jump(d) {
+      if (cur === "close" && d > 0) return;
+      const k = cur === "close" ? SCENES.length : SCENES.findIndex((s) => s.key === cur);
+      seek(SCENES[clamp(k + d, 0, SCENES.length - 1)].a);
+    }
+    function enterRec() {
+      pause(); app.classList.add("rec"); fullscreen(); setT(0);
+      clearTimeout(hold); hold = setTimeout(play, 1200);
+    }
+    function exitRec() { clearTimeout(hold); app.classList.remove("rec"); leaveFullscreen(); }
+
+    playBtn.addEventListener("click", () => (playing ? pause() : play()));
+    $("#v-restart").addEventListener("click", () => { seek(0); if (!playing) play(); });
+    scrub.addEventListener("input", () => { if (playing) pause(); setT(+scrub.value); label(); });
+    $("#v-rec").addEventListener("click", enterRec);
+    document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && app.classList.contains("rec")) exitRec(); });
+    nodes.forEach((n, i) => n.addEventListener("click", () => seek(SCENES[i].a)));
+    document.addEventListener("keydown", (e) => {
+      const el = e.target.closest ? e.target : document.body;
+      if (e.metaKey || e.ctrlKey || e.altKey || el.closest("input")) return;
+      const k = e.key.toLowerCase();
+      if (k === " " && !el.closest("button")) { e.preventDefault(); playing ? pause() : play(); }
+      else if (k === "arrowright") jump(1);
+      else if (k === "arrowleft") jump(-1);
+      else if (k === "r") { seek(0); if (!playing) play(); }
+      else if (k === "escape") exitRec();
+    });
+    show("close");
+    setT(END);
+  } else {
+    const SLIDES = ["title", "enroll", "search", "identify", "verify", "decide", "takedown", "data", "shipped", "close"];
+    const NOTES = [
+      "Since May, platforms have 48 hours to remove a reported intimate deepfake. Someone still has to find it and file the notice. Six Eyes does both.",
+      "You enroll once with a few selfies. We keep a 512-number face print and delete the photos.",
+      "X can't search by image, so we search your name and handles plus 12 deepfake terms, and only pay for new posts.",
+      "First we check it's actually you: 0.986 for the same person, 0.079 for a stranger. The heavy models only run on matches.",
+      "Three checks ask if it's fake: our DINOv3 detector, reconstruction and C2PA. Three ask if it's harmful: intimate content, the post's context, and copies. None decides alone.",
+      "Matches stay blurred. The detector gives evidence; the person in the photo makes the call, and one confirm covers every repost.",
+      "Our case worker drafts the TAKE IT DOWN notice and checks X again at 48 hours. If the post is still up, it prepares the FTC report and texts you.",
+      "23,000 training images, 3,000 fakes we generated ourselves, and 150 photos of our own team, with one teammate held out completely.",
+      "Fine-tuning won the benchmark but flagged 92% of a new person's real photos. The small probe flagged none, so that's what ships.",
+      "Six Eyes: we find it, verify it, you decide, and we take it down.",
+    ];
+    const prev = $("#p-prev"), next = $("#p-next"), count = $("#p-count"), notes = $("#notes"), notesBtn = $("#p-notes");
+    let idx = -1, raf = 0;
+    function go(i) {
+      i = clamp(i, 0, SLIDES.length - 1);
+      if (i === idx) return;
+      const fwd = i > idx;
+      idx = i;
+      cancelAnimationFrame(raf);
+      const name = SLIDES[i], k = SCENES.findIndex((s) => s.key === name);
+      show(name);
+      if (k >= 0 && fwd && !reduce) {
+        const { a, b } = SCENES[k], start = performance.now();
+        const step = (now) => { t = Math.min(b, a + now - start); render(); if (t < b) raf = requestAnimationFrame(step); };
+        t = a; render(); raf = requestAnimationFrame(step);
+      } else {
+        t = k >= 0 ? SCENES[k].b : name === "close" ? END : 0;
+        render();
+      }
+      count.textContent = `${i + 1} / ${SLIDES.length}`;
+      notes.textContent = NOTES[i];
+      prev.disabled = i === 0;
+      next.disabled = i === SLIDES.length - 1;
+    }
+    function toggleNotes() {
+      const on = app.classList.toggle("notes-on");
+      notes.hidden = !on;
+      notesBtn.setAttribute("aria-pressed", String(on));
+    }
+    prev.addEventListener("click", () => go(idx - 1));
+    next.addEventListener("click", () => go(idx + 1));
+    notesBtn.addEventListener("click", toggleNotes);
+    $("#p-fs").addEventListener("click", () => (document.fullscreenElement ? leaveFullscreen() : fullscreen()));
+    nodes.forEach((n) => n.addEventListener("click", () => go(SLIDES.indexOf(n.dataset.key))));
+    $("#stage").addEventListener("click", (e) => { if (!e.target.closest("button")) go(idx + 1); });
+    document.addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key, onButton = (e.target.closest ? e.target : document.body).closest("button");
+      if (k === "ArrowRight" || k === "PageDown" || ((k === " " || k === "Enter") && !onButton)) { e.preventDefault(); go(idx + 1); }
+      else if (k === "ArrowLeft" || k === "PageUp" || k === "Backspace") { e.preventDefault(); go(idx - 1); }
+      else if (k === "Home") go(0);
+      else if (k === "End") go(SLIDES.length - 1);
+      else if (k === "n" || k === "N") toggleNotes();
+      else if (k === "f" || k === "F") (document.fullscreenElement ? leaveFullscreen() : fullscreen());
+    });
+    go(0);
+  }
+  addEventListener("resize", render);
+})();
+</script>
+</body>
+</html>
