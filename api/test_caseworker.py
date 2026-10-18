@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -104,14 +105,52 @@ assert "not passed yet" in out and out.count("Still up") == 3 and sorted(checked
 fails(caseworker.escalate, run, root, match="Not yet")
 assert set(states().values()) == {"noticed"}
 
+# Factory owns the clock: wait_until sleeps when due_at is soon, schedules when it isn't.
+fails(caseworker.wait_until, run, stranger, match="isn't part of this case")
+future = (datetime.now(timezone.utc) + timedelta(hours=48)).isoformat(timespec="seconds")
+con.execute("UPDATE cases SET due_at = ? WHERE user_id = ? AND state = 'noticed'", (future, user))
+con.commit()
+run = caseworker.load(root, "confirmed")
+assert "new session will start" in caseworker.wait_until(run, root)
+assert (user, root) in caseworker.TIMERS
+past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
+con.execute("UPDATE cases SET due_at = ? WHERE user_id = ? AND state = 'noticed'", (past, user))
+con.commit()
+caseworker._disarm(user, root)
+assert "already passed" in caseworker.wait_until(run, root)
+soon = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+con.execute("UPDATE cases SET due_at = ? WHERE user_id = ? AND state = 'noticed'", (soon, user))
+con.commit()
+t0 = time.time()
+assert "has passed" in caseworker.wait_until(run, root)
+assert time.time() - t0 >= 0.9
+# Time-warp cuts an in-session wait short.
+later = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec="seconds")
+con.execute("UPDATE cases SET due_at = ? WHERE user_id = ? AND state = 'noticed'", (later, user))
+con.commit()
+cut = []
+threading.Thread(target=lambda: cut.append(caseworker.wait_until(caseworker.load(root, "confirmed"), root)),
+                 daemon=True).start()
+for _ in range(50):
+    if (user, root) in caseworker.WAKE:
+        break
+    time.sleep(0.02)
+assert caseworker.skip_deadline(root)
+for _ in range(50):
+    if cut:
+        break
+    time.sleep(0.02)
+assert cut and "skipped" in cut[0], cut
+
 
 class FakeSession:
     """Stands in for droid_sdk.Session: runs `script` through the session's MCP tools."""
     script: list = []
     seen: dict = {}
 
-    def __init__(self, cwd, model, config, interactions, runtime):
-        FakeSession.seen = {"cwd": cwd, "model": model, "config": config, "allow": interactions.on_permission}
+    def __init__(self, cwd, model, config, interactions, runtime, api_key=None):
+        FakeSession.seen = {"cwd": cwd, "model": model, "config": config, "allow": interactions.on_permission,
+                            "api_key": api_key}
         self.tools = {t.name: t for t in config.mcp_servers[0].tools}
 
     async def __aenter__(self):
@@ -156,9 +195,9 @@ def wait_idle():
     raise AssertionError("the case worker never finished")
 
 
-# Dashboard load (GET /cases) settles clusters past their deadline: post 10 is gone so it's resolved,
+# Dashboard load (GET /cases) wakes Factory on overdue clusters: post 10 is gone so it's resolved,
 # posts 11 and 12 are still up so they're escalated with an FTC packet, then the case worker tells the user.
-os.environ.update(CASEWORKER="1", DROID_PATH="/usr/local/bin/droid")
+os.environ.update(CASEWORKER="1", DROID_PATH="/usr/local/bin/droid", FACTORY_API_KEY="test-factory-key")
 caseworker.Session = FakeSession
 assert client.get(f"/cases/{user}").json()["settled"] == [], "nothing is due yet, so X isn't asked"
 past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
@@ -166,31 +205,60 @@ con.execute("UPDATE cases SET due_at = ? WHERE state = 'noticed'", (past,))
 con.commit()
 checked.clear()
 x.is_live = lambda post_id: checked.append(post_id) or post_id != "10"
-FakeSession.script = [("notify_user", {"user_id": user,
-                       "text": "Test: two posts are still up, so Six Eyes is reporting them to the FTC."})]
+FakeSession.script = [
+    ("check_live", {"case_id": root}),
+    ("escalate", {"case_id": root}),
+    ("notify_user", {"user_id": user, "link": "https://takeitdown.ftc.gov",
+                     "text": "Test: two posts are still up, so Six Eyes is reporting them to the FTC."}),
+]
 r = client.get(f"/cases/{user}")
 assert r.status_code == 200, r.text
-s = r.json()["settled"]
-assert len(s) == 1 and s[0]["resolved"] and s[0]["escalated"] and "takeitdown.ftc.gov" in (s[0]["ftc_packet"] or ""), s
+assert r.json()["settled"] == [], "Factory settles in the background"
 wait_idle()
 seen = FakeSession.seen
 assert all(not reply.is_error for reply in seen["replies"]), [r.content for r in seen["replies"]]
+assert seen["api_key"] == "test-factory-key"
 assert sorted(checked) == ["10", "11", "12"], "one billed check per post per session"
 assert states() == {"10": "resolved", "11": "escalated", "12": "escalated"}, states()
-assert "just checked every post" in seen["prompt"] and "https://x.com/copycat/status/12" in seen["prompt"]
+assert "deadline just passed" in seen["prompt"] and "https://x.com/copycat/status/12" in seen["prompt"]
 config = seen["config"]
 assert config.system_prompt == caseworker.SYSTEM and config.autonomy is Autonomy.OFF and seen["model"] == "auto"
 assert seen["cwd"] != os.getcwd() and not os.path.exists(seen["cwd"]), "Droid works in a throwaway empty folder"
 kinds = dict(con.execute("SELECT kind, COUNT(*) FROM events GROUP BY kind").fetchall())
 assert kinds["resolved"] == 1 and kinds["escalated"] == 2 and kinds["caseworker"] == 1, kinds
 log = json.loads(con.execute("SELECT detail FROM events WHERE kind = 'caseworker'").fetchone()[0])
-assert log["reason"] == "rechecked" and log["outcome"] == "success" and log["session_id"] == "session-1", log
-assert log["tools"] == [f"notify_user({user}, 'Test: two posts are still up, so Six Eyes is reporting them to the FTC.', '')"], log
+assert log["reason"] == "deadline" and log["outcome"] == "success" and log["session_id"] == "session-1", log
+assert log["tools"] == [
+    f"check_live({root})", f"escalate({root})",
+    f"notify_user({user}, 'Test: two posts are still up, so Six Eyes is reporting them to the FTC.', "
+    f"'https://takeitdown.ftc.gov')",
+], log
 escalated = json.loads(con.execute("SELECT detail FROM events WHERE kind = 'escalated'").fetchone()[0])
 assert escalated["still_up"] == ["https://x.com/burner/status/11", "https://x.com/copycat/status/12"] and escalated["dry_run"]
 assert "ftc_packet" in escalated and "File at: https://takeitdown.ftc.gov" in escalated["ftc_packet"]
 assert client.get(f"/messages/{user}").json()["messages"][0]["text"].startswith("Test: two posts")
 assert client.get(f"/cases/{user}").json()["settled"] == [], "already settled, so X isn't asked again"
+
+# Time-warp with Factory on: ends the wait now and the deadline session settles the cluster.
+fresh = add_case(user, "30", "late")
+held, caseworker.start = caseworker.start, lambda *a, **k: True
+assert client.post(f"/cases/{fresh}/confirm", json=both).status_code == 200
+caseworker.start = held
+assert states()["30"] == "noticed"
+checked.clear()
+x.is_live = lambda post_id: checked.append(post_id) or True
+FakeSession.script = [
+    ("check_live", {"case_id": fresh}),
+    ("escalate", {"case_id": fresh}),
+    ("notify_user", {"user_id": user, "link": "https://takeitdown.ftc.gov",
+                     "text": "Test: the post is still up."}),
+]
+r = client.post(f"/timewarp/{fresh}")
+assert r.status_code == 200, r.text
+assert r.json()["resolved"] == [] and r.json()["escalated"] == [fresh], r.json()
+assert "takeitdown.ftc.gov" in (r.json()["ftc_packet"] or "")
+wait_idle()
+assert checked == ["30"] and states()["30"] == "escalated"
 
 # Permissions: Droid may call the case tools, and nothing else.
 allow = seen["allow"]
@@ -205,12 +273,12 @@ for actions in ([shell], [theirs], [mine, shell], []):
 
 # A failed session is logged and frees the cluster, so the next start can try again.
 caseworker.Session = lambda **kw: (_ for _ in ()).throw(RuntimeError("droid crashed"))
-assert caseworker.start(root, "rechecked")
+assert caseworker.start(root, "deadline")
 wait_idle()
 last = json.loads(con.execute("SELECT detail FROM events WHERE kind = 'caseworker' ORDER BY rowid DESC").fetchone()[0])
 assert last["outcome"] == "error" and "droid crashed" in last["error"], last
 caseworker.Session, FakeSession.script = FakeSession, []
-assert caseworker.start(root, "rechecked")
+assert caseworker.start(root, "deadline")
 wait_idle()
 
 print("caseworker self-check passed")

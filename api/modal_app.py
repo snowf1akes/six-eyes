@@ -5,8 +5,8 @@ Deploy from the repo root, on a machine that has the trained heads in data/model
 URL: https://<workspace>--six-eyes-api-web.modal.run
 Needs three Modal secrets: six-eyes-x (X_BEARER_TOKEN, plus PHOTON_API_KEY, PHOTON_PROJECT_ID and
 PHOTON_AGENT_USER_ID for texts), huggingface (HF_TOKEN, for the gated DINOv3) and factory
-(FACTORY_API_KEY, for the case worker). Opening the dashboard rechecks a user's cases past
-their 48-hour removal deadline; hourly, deadline_sweep wakes the API to recheck everyone's.
+(FACTORY_API_KEY, for the case worker). The case worker owns the 48-hour clock; opening the
+dashboard or the hourly deadline_sweep only wakes overdue Factory sessions if that timer died.
 """
 from pathlib import Path
 
