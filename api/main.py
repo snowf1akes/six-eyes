@@ -431,10 +431,9 @@ def notice(case_id: int):
                 non_consent_confirmed=True)
         except ValidationError as e:
             raise HTTPException(422, f"The notice is incomplete: {e.errors()[0]['loc'][0]} {e.errors()[0]['msg']}.")
-        text = channels.render(packet, now)
         packets.append({"reported_username": username, "case_ids": [i for i, _, _ in items],
-                        "content_urls": packet.content_urls, "notice": text,
-                        "form": channels.form_answers(channel, packet, text, now),
+                        "content_urls": packet.content_urls, "notice": channels.render(packet, now),
+                        "form": channels.form_answers(channel, packet, now),
                         "checkboxes": [b.model_dump() for b in channel.checkboxes]})
 
     to = os.environ.get("NOTICE_TEST_TO") if dry else None

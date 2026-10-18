@@ -9,6 +9,7 @@ SMTP_PASSWORD and NOTICE_FROM (defaults to SMTP_USER).
 """
 import json
 import os
+import re
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
@@ -20,9 +21,9 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator
 
 CHANNELS_PATH = Path(__file__).with_name("data") / "channels.json"
-TEMPLATE_PATH = Path(__file__).with_name("templates") / "notice.md"
+TEMPLATES = Path(__file__).with_name("templates")
 HOST_ALIASES = {"twitter.com": "x", "mobile.twitter.com": "x", "x.com": "x", "mobile.x.com": "x"}
-NOTICE_FIELD = "<rendered api/templates/notice.md>"  # channels.json's stand-in for the whole notice
+RENDERED = re.compile(r"<rendered api/templates/(\w+\.md)>")  # channels.json's stand-in for a whole template
 # depiction_kind values, from NOTES.md
 FORGERY = 'a digitally altered or AI-generated image of them (a "digital forgery" as defined in the Act)'
 INTIMATE = "an intimate image of them"
@@ -96,22 +97,23 @@ def channel_for(url: str) -> Channel:
     return channels()[HOST_ALIASES.get(host, host)]
 
 
-def render(notice: TakedownNotice, now: datetime) -> str:
-    return TEMPLATE_PATH.read_text().format(**notice.placeholders(now))
+def render(notice: TakedownNotice, now: datetime, template: str = "notice.md") -> str:
+    return (TEMPLATES / template).read_text().strip().format(**notice.placeholders(now))
 
 
-def form_answers(channel: Channel, notice: TakedownNotice, text: str, now: datetime) -> list[dict]:
+def form_answers(channel: Channel, notice: TakedownNotice, now: datetime) -> list[dict]:
     """The channel's form, question by question, with the answer for this notice filled in."""
     values = notice.placeholders(now)
     return [{"question": f.question, "required": f.required, "type": f.type, "preset": f.preset,
-             "value": text if f.value == NOTICE_FIELD else f.value.format(**values)} for f in channel.fields]
+             "value": render(notice, now, m[1]) if (m := RENDERED.fullmatch(f.value)) else f.value.format(**values)}
+            for f in channel.fields]
 
 
 def instructions(channel: Channel, packet: dict) -> str:
     """Plain-text steps for filing one packet through the channel's form, for the test email."""
     lines = [f"Report @{packet['reported_username']} on {channel.name}", f"Form: {channel.url}", ""]
     for i, f in enumerate(packet["form"], 1):
-        answer = "(paste the notice below)" if f["type"] == "textarea" else f["value"]
+        answer = f["value"]
         if f["preset"]:
             answer += " (the form link already picks this)"
         lines += [f"{i}. {f['question']}{'' if f['required'] else ' (optional)'}", f"   {answer}"]

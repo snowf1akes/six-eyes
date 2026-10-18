@@ -529,10 +529,6 @@ svg {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.fp-preview {
-  grid-column: 2;
-  color: var(--ink-3);
-}
 .fp-section {
   display: flex;
   flex-direction: column;

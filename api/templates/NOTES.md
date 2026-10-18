@@ -2,7 +2,7 @@
 
 `notice.md` is the TAKE IT DOWN notice. Render it with Python `str.format(**fields)`. Every `{name}` is a placeholder, and the template has no other curly braces.
 
-The same rendered text goes into X's "Please provide more details about what's happening" box (see `api/data/channels.json`).
+X's form takes separate fields, not one letter, so the full notice is the **record**: the case timeline, the dry-run packet, the FTC packet's "notice copy", and channels that accept a written notice. X's "Please provide more details about what's happening" field gets the short `details.md` (about 490 characters rendered, using a subset of the same placeholders). The other X fields are mapped one by one in `api/data/channels.json`.
 
 ## Placeholders
 

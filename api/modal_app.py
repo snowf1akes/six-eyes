@@ -41,6 +41,7 @@ image = (
     .add_local_file(Path(__file__).with_name("data") / "keywords.json", "/root/data/keywords.json")
     .add_local_file(Path(__file__).with_name("data") / "channels.json", "/root/data/channels.json")
     .add_local_file(Path(__file__).with_name("templates") / "notice.md", "/root/templates/notice.md")
+    .add_local_file(Path(__file__).with_name("templates") / "details.md", "/root/templates/details.md")
     .add_local_file(MODELS / "dinov3_binary.joblib", "/root/models/dinov3_binary.joblib")
     .add_local_file(MODELS / "dinov3_multi.joblib", "/root/models/dinov3_multi.joblib")
 )

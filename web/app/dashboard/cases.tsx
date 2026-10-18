@@ -424,7 +424,7 @@ function FormGuide({ packet, formUrl, platform }: { packet: Packet; formUrl: str
               {!f.required && <span className="hint"> (optional)</span>}
             </span>
             <div className="form-a">
-              <span>{f.type === "textarea" ? "The full notice below" : f.type === "select" ? `Choose “${f.value}”` : f.value}</span>
+              <span>{f.type === "select" ? `Choose “${f.value}”` : f.value}</span>
               {f.type !== "select" && <CopyButton text={f.value} />}
             </div>
           </li>
@@ -499,7 +499,6 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
         <ol className="fp-steps">
           {steps.map((f, i) => {
             const isDone = done.includes(i);
-            const isNotice = f.type === "textarea";
             return (
               <li key={`${packet.reported_username} ${f.question}`} className={`fp-step${isDone ? " done" : ""}`}>
                 <span className="fp-num" aria-label={isDone ? "Copied" : `Step ${i + 1}`}>
@@ -510,12 +509,8 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
                   {!f.required && " (optional)"}
                 </span>
                 <div className="fp-a">
-                  <span className={`fp-value${isNotice || f.value.includes("\n") ? " clamp" : ""}`}>
-                    {f.type === "select"
-                      ? `Choose “${f.value}”`
-                      : isNotice
-                        ? `The full TAKE IT DOWN notice · ${f.value.length.toLocaleString()} characters`
-                        : f.value}
+                  <span className={`fp-value${f.value.includes("\n") ? " clamp" : ""}`}>
+                    {f.type === "select" ? `Choose “${f.value}”` : f.value}
                   </span>
                   {f.type !== "select" && (
                     <CopyButton
@@ -524,12 +519,6 @@ function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boo
                     />
                   )}
                 </div>
-                {isNotice && (
-                  <details className="fp-preview">
-                    <summary>Preview</summary>
-                    <pre className="notice-text">{f.value}</pre>
-                  </details>
-                )}
               </li>
             );
           })}

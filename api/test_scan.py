@@ -178,7 +178,9 @@ assert "digital forgery" in text and "{" not in text, text  # fake_prob 0.9; eve
 form = {f["question"]: f["value"] for f in packets["burner"]["form"]}
 assert form["Username of the account you are reporting"] == "burner"
 assert form["Your email address"] == "reports@test.example"
-assert form["Please provide more details about what's happening"] == text
+details = form["Please provide more details about what's happening"]  # the short details.md, not the notice
+assert details.startswith("I am the authorized representative of Sunny Le") and "digital forgery" in details
+assert details.endswith(f"Case reference: {case_91}.") and len(details) < 600 and "{" not in details, details
 assert [b["check"] for b in packets["burner"]["checkboxes"]] == [False, True, True]
 assert [f["type"] for f in packets["burner"]["form"] if f["preset"]] == ["select", "select"]  # the link picks both
 [(to, subject, body, reply_to)] = sent
