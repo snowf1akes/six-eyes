@@ -39,10 +39,13 @@ def search_terms() -> list[str]:
 
 @lru_cache(maxsize=1)
 def flag_lists() -> tuple[re.Pattern | None, frozenset[str], tuple[str, ...]]:
+    """Search terms are flagged too, in text and as hashtags ("AI generated" also flags #AIgenerated)."""
     data = _data()
-    words = sorted({k.strip() for k in data.get("keywords", []) if k.strip()}, key=len, reverse=True)
+    terms = search_terms()
+    words = sorted({k.strip() for k in data.get("keywords", []) + terms if k.strip()}, key=len, reverse=True)
     pattern = re.compile(rf"(?<!\w)(?:{'|'.join(map(re.escape, words))})(?!\w)", re.I) if words else None
-    tags = frozenset(t.strip().lstrip("#").lower() for t in data.get("hashtags", []) if t.strip())
+    tags = frozenset(t.strip().lstrip("#").lower() for t in data.get("hashtags", []) if t.strip()) | {
+        re.sub(r"[\s-]+", "", t).lower() for t in terms}
     domains = tuple({d.strip().lower().removeprefix("www.") for d in data.get("domains", []) if d.strip()})
     return pattern, tags, domains
 

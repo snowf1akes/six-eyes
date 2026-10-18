@@ -8,12 +8,17 @@ import sqlite3
 import tempfile
 import time
 
+from datetime import datetime, timedelta
+
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
+os.environ.update(DRY_RUN="1", NOTICE_TEST_TO="me@test.example", SIGNER_NAME="Raymond Wang",
+                  CONTACT_EMAIL="reports@test.example")
 
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import analyze  # noqa: E402
+import channels  # noqa: E402
 import x  # noqa: E402
 from main import DB_PATH, app  # noqa: E402
 
@@ -21,21 +26,37 @@ ZERO, FAR = "0" * 64, "f" * 64
 NEAR_ZERO = "0" * 56 + "ffffff7f"  # 31 bits from ZERO: a clone
 author = x.Author(id="a1", username="burner", name="B", created_at="2026-10-15T00:00:00Z",
                   public_metrics={"followers_count": 1, "following_count": 500})
+copycat = x.Author(id="a2", username="copycat", name="C")
 
 
-def post(pid, *keys, text="look @sunny"):
-    return x.Post(id=pid, url=f"https://x.com/burner/status/{pid}", text=text, author=author,
+def post(pid, *keys, text="look @sunny", by=author, **kw):
+    return x.Post(id=pid, url=f"https://x.com/{by.username}/status/{pid}", text=text, author=by, **kw,
                   public_metrics={"like_count": 3}, media=[x.Media(key=k, type="photo", url=f"https://p/{k}") for k in keys])
 
 
 # media url -> (pdq, face_sim); a missing url makes analyze() fail like an unreadable image would.
 fake = {"https://p/a": (ZERO, 0.9), "https://p/b": (FAR, 0.9), "https://p/d": (NEAR_ZERO, 0.2),
-        "https://p/s1": (FAR, 0.1), "https://p/s2": (ZERO, 0.8)}
+        "https://p/s1": (FAR, 0.1), "https://p/s2": (ZERO, 0.8), "https://p/k": ("0f" * 32, 0.9)}
 analyze.analyze = lambda url, emb: analyze.AnalyzeResult(
     face_sim=fake[url][1], frame_drift=None, fake_prob=0.9, generator_guess="swap",
     recon_score=0.03, c2pa=None, nsfw=0.1, pdq=fake[url][0])
-search_results, sweep_results, since_ids, sweep_since_ids = [], [], [], []
-x.search = lambda name, handles, since_id=None: since_ids.append(since_id) or search_results
+search_results, keyword_results, sweep_results = [], [], []
+since_ids, keyword_since_ids, sweep_since_ids = [], [], []
+
+
+def fake_search(name, handles, since_id=None, terms=None):
+    if terms:  # name plus a deepfake term
+        return keyword_since_ids.append(since_id) or keyword_results
+    return since_ids.append(since_id) or search_results
+
+
+def raises(exc):
+    def f(*a, **k):
+        raise exc
+    return f
+
+
+x.search = fake_search
 x.sweep = lambda terms, limit=500, since_id=None: sweep_since_ids.append(since_id) or sweep_results
 
 con = sqlite3.connect(DB_PATH)
@@ -65,7 +86,7 @@ assert con.execute("SELECT COUNT(*) FROM events WHERE kind = 'found'").fetchone(
 
 # Second scan: post 10 is skipped, post 12 is a clone of image a (and saved despite a low face match,
 # because the name search keeps everything), post 11 is retried.
-search_results[:] = [post("10", "a", "b"), post("12", "d"), post("11", "missing")]
+search_results[:] = [post("10", "a", "b"), post("12", "d", by=copycat), post("11", "missing")]
 r = client.post(f"/scan/{user_id}")
 assert r.json()["posts_checked"] == 2 and r.json()["cases_found"] == 1, r.json()
 assert since_ids[-1] == "10", since_ids
@@ -86,6 +107,19 @@ client.post(f"/scan/{user_id}")
 assert since_ids[-1] == "12", since_ids
 assert client.post(f"/scan/{user_id}").json()["cases_found"] == 0, "sweep is off by default"
 
+# Name plus a deepfake term: labelled "keyword" even though the plain name search returns it too,
+# flagged in text and hashtags, and it bounds both name queries next time.
+assert set(keyword_since_ids) == {None}
+keyword_results[:] = [post("13", "k", text="Sunny Le deepfake lol", entities={"hashtags": [{"tag": "AIgenerated"}]})]
+search_results[:] = keyword_results[:]
+assert client.post(f"/scan/{user_id}").json()["cases_found"] == 1
+kw = json.loads(cases()[-1][6])
+assert kw["source"] == "keyword", kw["source"]
+assert kw["signals"]["keywords"] == ["deepfake"] and kw["signals"]["hashtags"] == ["aigenerated"], kw["signals"]
+client.post(f"/scan/{user_id}")
+assert keyword_since_ids[-1] == "13" and since_ids[-1] == "13", (keyword_since_ids, since_ids)
+keyword_results[:] = search_results[:] = []
+
 # Dashboard list: highest priority first; a stranger's face (0.2) ranks at 0; clones count posts.
 r = client.get(f"/cases/{user_id}")
 assert r.status_code == 200, r.text
@@ -95,6 +129,8 @@ prios = [c["priority"] for c in listed]
 assert prios == sorted(prios, reverse=True) and all(0 <= p <= 1 for p in prios), prios
 by_post = {c["post_id"]: c for c in listed}
 assert by_post["12"]["priority"] == 0 and by_post["10"]["priority"] > 0
+image_a = next(c for c in listed if c["id"] == rows[0][0])
+assert by_post["13"]["priority"] > image_a["priority"], "same face match as post 10's image a and fewer copies, but says deepfake"
 assert by_post["91"]["copies"] == 3 and by_post["91"]["found_at"], "posts 10, 12 and 91 share image a"
 assert by_post["91"]["scores"]["media"]["url"] == "https://p/s2"
 assert client.get(f"/cases/{user_id}?state=bogus").status_code == 422
@@ -107,16 +143,73 @@ for body in ({"is_me": True, "not_consensual": False}, {"is_me": False, "not_con
     assert client.post(f"/cases/{case_91}/confirm", json=body).status_code == 422
 both = {"is_me": True, "not_consensual": True}
 assert client.post("/cases/999/confirm", json=both).status_code == 404
+channels.send_email = raises(RuntimeError("Email isn't set up."))  # confirming works even if filing fails
 r = client.post(f"/cases/{case_91}/confirm", json=both)
 assert r.status_code == 200, r.text
 cluster = {c[0] for c in cases() if c[3] in (ZERO, NEAR_ZERO)}
 assert set(r.json()["confirmed"]) == cluster and len(cluster) == 3, (r.json(), cluster)
+assert r.json()["notice"] is None and r.json()["notice_error"] == "Email isn't set up.", r.json()
 states = {c[3]: c[5] for c in cases()}
 assert states[ZERO] == states[NEAR_ZERO] == "confirmed" and states[FAR] == "found", states
 assert {c["post_id"] for c in client.get(f"/cases/{user_id}?state=confirmed").json()["cases"]} == {"10", "12", "91"}
 events = con.execute("SELECT detail FROM events WHERE kind = 'confirmed'").fetchall()
 assert len(events) == 3 and all(json.loads(d)["not_consensual"] for (d,) in events)
-assert client.post(f"/cases/{case_91}/confirm", json=both).json() == {"confirmed": []}, "already confirmed"
+assert client.post(f"/cases/{case_91}/confirm", json=both).json()["confirmed"] == [], "already confirmed"
+
+# Notice, dry run: the retry emails the test inbox one packet per posting account (X's form reports one
+# username at a time), covering every post in the cluster, and moves the cluster to noticed for 48 hours.
+sent = []
+channels.send_email = lambda to, subject, body, reply_to=None: sent.append((to, subject, body, reply_to))
+image_b = next(c[0] for c in cases() if c[3] == FAR)
+assert client.post(f"/cases/{image_b}/notice").status_code == 409, "image b is only found"
+r = client.post(f"/cases/{case_91}/notice")
+assert r.status_code == 200, r.text
+n = r.json()
+assert n["dry_run"] and not n["intimate"] and n["delivered_to"] == "me@test.example" and n["platform"] == "X"
+assert set(n["case_ids"]) == cluster and n["form_url"].endswith("/take-it-down/authorized-rep")
+packets = {p["reported_username"]: p for p in n["packets"]}
+assert set(packets) == {"burner", "copycat"}, packets.keys()
+assert packets["burner"]["content_urls"] == ["https://x.com/burner/status/10", "https://x.com/burner/status/91"]
+assert packets["copycat"]["content_urls"] == ["https://x.com/copycat/status/12"]
+text = packets["burner"]["notice"]
+assert "Account that published the content: @burner" in text and "/s/ Raymond Wang" in text
+assert "Authorized representative of Sunny Le" in text and "reports@test.example" in text
+assert "digital forgery" in text and "{" not in text, text  # fake_prob 0.9; every placeholder filled
+form = {f["question"]: f["value"] for f in packets["burner"]["form"]}
+assert form["Username of the account you are reporting"] == "burner"
+assert form["Your email address"] == "reports@test.example"
+details = form["Please provide more details about what's happening"]  # the short details.md, not the notice
+assert details.startswith("I am the authorized representative of Sunny Le") and "digital forgery" in details
+assert details.endswith(f"Case reference: {case_91}.") and len(details) < 600 and "{" not in details, details
+assert [b["check"] for b in packets["burner"]["checkboxes"]] == [False, True, True]
+assert [f["type"] for f in packets["burner"]["form"] if f["preset"]] == ["select", "select"]  # the link picks both
+[(to, subject, body, reply_to)] = sent
+assert to == "me@test.example" and subject == "[Six Eyes test] 2 TAKE IT DOWN reports for X"
+assert body.startswith("TEST ONLY") and "Report @copycat on X" in body and reply_to == "reports@test.example"
+assert "authorized-rep" in body and "the form link already picks this" in body
+noticed = con.execute("SELECT state, sent_at, due_at FROM cases WHERE id IN (%s)" % ",".join(map(str, cluster))).fetchall()
+assert {s for s, _, _ in noticed} == {"noticed"}
+assert datetime.fromisoformat(noticed[0][2]) - datetime.fromisoformat(noticed[0][1]) == timedelta(hours=48)
+notice_events = con.execute("SELECT detail FROM events WHERE kind = 'notice'").fetchall()
+assert len(notice_events) == 3 and json.loads(notice_events[0][0])["dry_run"] is True
+assert client.post(f"/cases/{case_91}/notice").status_code == 409, "already noticed"
+assert client.post("/cases/999/notice").status_code == 404
+
+# Live (DRY_RUN=0): refused unless the content looks intimate; then the packet comes back, nothing is emailed.
+os.environ["DRY_RUN"] = "0"
+sent.clear()
+r = client.post(f"/cases/{image_b}/confirm", json=both).json()
+assert r["notice"] is None and "doesn't look like intimate content" in r["notice_error"], r
+con.execute("UPDATE cases SET scores = json_set(scores, '$.nsfw', 0.9) WHERE id = ?", (image_b,))
+con.commit()
+r = client.post(f"/cases/{image_b}/notice")
+assert r.status_code == 200 and r.json()["intimate"] and r.json()["delivered_to"] is None, r.text
+assert sent == [], "nothing is emailed live; X's form is filed by a person"
+os.environ["DRY_RUN"] = "1"
+del os.environ["SIGNER_NAME"]  # no named signer: refused rather than signed by nobody
+r = client.post(f"/cases/{by_post['13']['id']}/confirm", json=both).json()
+assert r["notice"] is None and r["notice_error"].startswith("Set SIGNER_NAME"), r
+os.environ["SIGNER_NAME"] = "Raymond Wang"
 
 
 
@@ -133,21 +226,14 @@ def background_scan():
 
 
 # Background scan: returns at once, saves cases as it goes, and reports progress until done.
-search_results[:] = [post("13", "a")]
+search_results[:] = [post("14", "a")]
 assert background_scan() == {"user_id": user_id, "posts_checked": 1, "cases_found": 1, "media_failed": 0,
                              "running": False, "error": None}
-assert cases()[-1][1] == "13"
+assert cases()[-1][1] == "14"
 
 # Errors.
 assert client.post("/scan/999").status_code == 404
 assert client.post("/scan/999?background=true").status_code == 404
-
-
-def raises(exc):
-    def f(*a, **k):
-        raise exc
-    return f
-
 
 req = httpx.Request("GET", "https://api.x.com")
 for exc, code in [(httpx.HTTPStatusError("", request=req, response=httpx.Response(429, request=req)), 429),

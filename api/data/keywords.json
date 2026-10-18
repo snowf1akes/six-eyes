@@ -1,5 +1,5 @@
 {
-  "_note": "Placeholder until C fills it. search: terms x.sweep() searches X for, matched as whole words or phrases; keep the joined query under 512 characters. keywords: words or phrases flagged in post text, case-insensitive. hashtags: without '#'. domains: a domain also matches its subdomains.",
+  "_note": "Placeholder until C fills it. search: terms x.sweep() searches X for, matched as whole words or phrases; keep the joined query under 512 characters; each is also flagged in post text and as a hashtag with spaces removed. keywords: more words or phrases flagged in post text, case-insensitive. hashtags: without '#'. domains: a domain also matches its subdomains.",
   "search": [
     "deepfake",
     "deepfakes",

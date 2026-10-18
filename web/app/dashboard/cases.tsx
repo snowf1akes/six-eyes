@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Check, CircleAlert, CircleCheck, ExternalLink, Eye, EyeOff } from "../icons";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -24,11 +25,39 @@ type Scores = {
   c2pa: boolean | null;
   nsfw: number;
   signals: Signals;
-  source: "search" | "sweep";
+  source: "keyword" | "search" | "sweep";
   media: { key: string; type: "photo" | "video" | "animated_gif"; url: string };
   text: string;
 };
 type Case = { id: number; url: string; found_at: string | null; copies: number; priority: number; scores: Scores };
+type Packet = {
+  reported_username: string;
+  content_urls: string[];
+  notice: string;
+  form: { question: string; required: boolean; type: string; preset: boolean; value: string }[];
+  checkboxes: { label: string; check: boolean; why: string }[];
+};
+type Notice = {
+  dry_run: boolean;
+  intimate: boolean;
+  platform: string;
+  form_url: string | null;
+  delivered_to: string | null;
+  due_at: string;
+  packets: Packet[];
+};
+type Filing = {
+  caseId: number;
+  ids: number[];
+  notice: Notice | null;
+  error: string | null;
+  formOpened?: boolean;
+  floating?: boolean;
+};
+// Chrome and Edge only: a small window that stays on top of every other window, the platform's form included.
+type DocumentPictureInPicture = { requestWindow(options: { width: number; height: number }): Promise<Window> };
+type Helper = { float: Promise<Window | null> | null; form: Window | null };
+type Floating = { win: Window; root: HTMLElement; caseId: number };
 type Load = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; cases: Case[] };
 
 const GENERATORS: Record<string, string> = {
@@ -37,6 +66,11 @@ const GENERATORS: Record<string, string> = {
   inpaint: "Edited region (inpainting)",
   txt2img: "Generated from a text prompt",
   "vae-decoded": "Passed through an AI image model",
+};
+const SOURCES: Record<Scores["source"], string> = {
+  keyword: "Found by your name with a deepfake term",
+  search: "Found by name search",
+  sweep: "Found by deepfake terms and your face",
 };
 const ENGAGEMENT: [string, string][] = [
   ["like", "Likes"],
@@ -57,13 +91,31 @@ function identityLabel(sim: number) {
 export function Cases() {
   const user = useSearchParams().get("user");
   const [load, setLoad] = useState<Load>({ status: "loading" });
-  const [moved, setMoved] = useState(0);
+  const [filings, setFilings] = useState<Filing[]>([]);
+  const [floating, setFloating] = useState<Floating | null>(null);
   const [reload, setReload] = useState(0);
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
-  function onConfirmed(ids: number[]) {
-    setMoved((n) => n + ids.length);
-    setLoad((l) => (l.status === "ready" ? { ...l, cases: l.cases.filter((c) => !ids.includes(c.id)) } : l));
+  function onConfirmed(filing: Filing, { float, form }: Helper) {
+    setLoad((l) => (l.status === "ready" ? { ...l, cases: l.cases.filter((c) => !filing.ids.includes(c.id)) } : l));
+    const url = filing.notice?.form_url;
+    if (form && url) form.location.href = url;
+    else form?.close();
+    setFilings((f) => [{ ...filing, formOpened: Boolean(form && url) }, ...f]);
+    float?.then((win) => {
+      if (!win || win.closed) return;
+      if (!filing.notice) return win.close();
+      const root = win.document.createElement("div");
+      root.className = "float";
+      win.document.body.replaceChildren(root);
+      win.addEventListener("pagehide", () => setFloating((cur) => (cur?.win === win ? null : cur)));
+      setFloating({ win, root, caseId: filing.caseId });
+      setFilings((f) => f.map((x) => (x.caseId === filing.caseId ? { ...x, floating: true } : x)));
+    });
+  }
+
+  function onRetried(filing: Filing) {
+    setFilings((f) => f.map((x) => (x.caseId === filing.caseId ? filing : x)));
   }
 
   useEffect(() => {
@@ -92,17 +144,13 @@ export function Cases() {
   if (load.status === "loading") return <p className="meta">Loading found posts…</p>;
   if (load.status === "error") return <Note title="Couldn’t load found posts">{load.message}</Note>;
 
+  const floated = floating && filings.find((f) => f.caseId === floating.caseId);
   return (
     <>
-      {moved > 0 && (
-        <div className="note" role="status">
-          <CircleCheck />
-          <span className="note-title">
-            {moved} {moved === 1 ? "post" : "posts"} confirmed
-          </span>
-          <p>Six Eyes will prepare a removal request for each one. Nothing is sent until you review it.</p>
-        </div>
-      )}
+      {floating && floated?.notice && createPortal(<FloatPanel notice={floated.notice} formOpened={!!floated.formOpened} />, floating.root)}
+      {filings.map((f) => (
+        <FilingNote key={f.caseId} filing={f} onRetried={onRetried} />
+      ))}
       <Scan user={user} onProgress={refresh} />
       {load.cases.length ? (
         <>
@@ -119,7 +167,7 @@ export function Cases() {
         </>
       ) : (
         <p className="lede">
-          {moved > 0 ? "Nothing left to review." : "No posts found yet."} Scan X to look for posts that show you.
+          {filings.length ? "Nothing left to review." : "No posts found yet."} Scan X to look for posts that show you.
         </p>
       )}
     </>
@@ -214,11 +262,12 @@ function Scan({ user, onProgress }: { user: string; onProgress: () => void }) {
   );
 }
 
-function CaseCard({ c, onConfirmed }: { c: Case; onConfirmed: (ids: number[]) => void }) {
+function CaseCard({ c, onConfirmed }: { c: Case; onConfirmed: (f: Filing, h: Helper) => void }) {
   const s = c.scores;
   const sig = s.signals;
   const author = new URL(c.url).pathname.split("/")[1];
-  const flags = [...sig.keywords, ...sig.hashtags.map((h) => `#${h}`), ...sig.domains];
+  const terms = [...sig.keywords, ...sig.hashtags.map((h) => `#${h}`)];
+  const flags = [...terms, ...sig.domains];
 
   return (
     <article className="sheet case" aria-labelledby={`case-${c.id}`}>
@@ -230,9 +279,10 @@ function CaseCard({ c, onConfirmed }: { c: Case; onConfirmed: (ids: number[]) =>
               Priority {Math.round(c.priority * 100)}
             </h2>
             <p className="meta">
-              @{author} · {s.source === "sweep" ? "Found by keyword search" : "Found by name search"}
+              @{author} · {SOURCES[s.source]}
               {c.found_at && ` · ${new Date(c.found_at).toLocaleString()}`}
             </p>
+            {terms.length > 0 && <p className="meta">Uses {terms.join(", ")}</p>}
           </div>
           <a className="btn btn-outline" href={c.url} target="_blank" rel="noreferrer noopener">
             <ExternalLink />
@@ -285,19 +335,321 @@ function CaseCard({ c, onConfirmed }: { c: Case; onConfirmed: (ids: number[]) =>
   );
 }
 
+const when = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+function FilingNote({ filing, onRetried }: { filing: Filing; onRetried: (f: Filing) => void }) {
+  const [busy, setBusy] = useState(false);
+  const { notice: n, error, ids } = filing;
+  const posts = `${ids.length} ${ids.length === 1 ? "post" : "posts"}`;
+
+  async function retry() {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/cases/${filing.caseId}/notice`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The removal request wasn’t made.");
+      onRetried({ ...filing, notice: data, error: null });
+    } catch (e) {
+      onRetried({ ...filing, error: e instanceof TypeError ? "Can't reach the Six Eyes server." : (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!n)
+    return (
+      <div className="note is-error" role="alert">
+        <CircleAlert />
+        <span className="note-title">{posts} confirmed, but the removal request wasn’t made</span>
+        <p>{error}</p>
+        <div className="note-more actions">
+          <button className="btn btn-outline" type="button" disabled={busy} onClick={retry}>
+            {busy ? "Trying…" : "Try again"}
+          </button>
+        </div>
+      </div>
+    );
+
+  const reports = n.packets.length === 1 ? "1 report" : `${n.packets.length} reports`;
+  return (
+    <div className="note" role="status">
+      <CircleCheck />
+      <span className="note-title">
+        {n.dry_run ? `Test: ${reports} for ${n.platform} prepared` : `${reports} ready to file with ${n.platform}`}
+      </span>
+      <p>
+        {n.dry_run
+          ? `Test mode: our test posts were shared with consent, so don’t submit these.${n.delivered_to ? ` A copy went to ${n.delivered_to}.` : ""}`
+          : `Submit each report through ${n.platform}’s form. ${n.platform} must remove the posts within 48 hours of receiving it.`}
+        {n.dry_run && !n.intimate && " Live, this would be refused: it doesn’t look intimate, so the TAKE IT DOWN Act doesn’t cover it."}
+        {!n.dry_run && ` Six Eyes will check back after ${when(n.due_at)}.`}
+        {filing.formOpened && ` ${n.platform}’s form is open in a new ${filing.floating ? "tab" : "window"}.`}
+        {filing.floating && ` The answers are also in a floating window that stays on top of ${n.platform}’s form.`}
+      </p>
+      {n.packets.map((p) => (
+        <FormGuide key={p.reported_username} packet={p} formUrl={n.form_url} platform={n.platform} />
+      ))}
+    </div>
+  );
+}
+
+// One report through the platform's form: each question with the answer to paste, then the checkboxes.
+function FormGuide({ packet, formUrl, platform }: { packet: Packet; formUrl: string | null; platform: string }) {
+  const preset = packet.form.filter((f) => f.preset);
+  return (
+    <section className="note-more form-guide">
+      <div className="form-guide-head">
+        <span className="note-title">
+          Report @{packet.reported_username} · {packet.content_urls.length}{" "}
+          {packet.content_urls.length === 1 ? "post" : "posts"}
+        </span>
+        {formUrl && (
+          <a className="btn btn-outline" href={formUrl} target="_blank" rel="noreferrer noopener">
+            <ExternalLink />
+            Open {platform}’s form
+          </a>
+        )}
+      </div>
+      {preset.length > 0 && (
+        <p className="hint">
+          The form opens with {preset.map((f) => `“${f.value}”`).join(" and ")} already chosen. If it asks anyway, pick those.
+        </p>
+      )}
+      <ol className="form-steps">
+        {packet.form.filter((f) => !f.preset).map((f) => (
+          <li key={f.question}>
+            <span className="form-q">
+              {f.question}
+              {!f.required && <span className="hint"> (optional)</span>}
+            </span>
+            <div className="form-a">
+              <span>{f.type === "select" ? `Choose “${f.value}”` : f.value}</span>
+              {f.type !== "select" && <CopyButton text={f.value} />}
+            </div>
+          </li>
+        ))}
+        {packet.checkboxes.map((b) => (
+          <li key={b.label}>
+            <span className="form-q">{b.check ? "Tick" : "Leave unticked"}: {b.label}</span>
+            <span className="hint">{b.why}</span>
+          </li>
+        ))}
+      </ol>
+      <details>
+        <summary>Read the notice</summary>
+        <pre className="notice-text">{packet.notice}</pre>
+      </details>
+    </section>
+  );
+}
+
+// The floating window: what to paste into the platform's form, step by step, readable at a glance beside it.
+function FloatPanel({ notice: n, formOpened }: { notice: Notice; formOpened: boolean }) {
+  const [tab, setTab] = useState(0);
+  const [copied, setCopied] = useState<Record<string, number[]>>({});
+  const packet = n.packets[Math.min(tab, n.packets.length - 1)];
+  const preset = packet.form.filter((f) => f.preset);
+  const steps = packet.form.filter((f) => !f.preset);
+  const done = copied[packet.reported_username] ?? [];
+  const copyable = steps.filter((f) => f.type !== "select").length;
+  const posts = (k: number) => `${k} ${k === 1 ? "post" : "posts"}`;
+
+  return (
+    <>
+      <header className="fp-head">
+        <div className="fp-brand">
+          <span className="fp-kicker">Six Eyes · Report to {n.platform}</span>
+          <span className={`chip ${n.dry_run ? "chip-test" : "chip-done"}`}>{n.dry_run ? "Test" : "Live"}</span>
+        </div>
+        {n.packets.length > 1 ? (
+          <div className="fp-tabs" role="tablist" aria-label="Accounts to report">
+            {n.packets.map((p, i) => (
+              <button
+                key={p.reported_username}
+                className={`btn btn-outline btn-sm fp-tab${i === tab ? " pressed" : ""}`}
+                type="button"
+                role="tab"
+                aria-selected={i === tab}
+                onClick={() => setTab(i)}
+              >
+                @{p.reported_username} · {p.content_urls.length}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <h1 className="title">
+            @{packet.reported_username} <span className="meta">· {posts(packet.content_urls.length)}</span>
+          </h1>
+        )}
+        <p className={`fp-callout${n.dry_run ? " is-test" : ""}`}>
+          {n.dry_run
+            ? `Test mode: our test posts were shared with consent, so don’t submit this.${n.intimate ? "" : " Live, it wouldn’t qualify: it doesn’t look intimate."}`
+            : `${n.platform} must remove the posts within 48 hours of receiving this.`}
+        </p>
+      </header>
+
+      <main className="fp-body">
+        {preset.length > 0 && (
+          <details className="hint">
+            <summary>The link answers the first {preset.length} questions</summary>
+            If {n.platform} asks anyway, choose {preset.map((f) => `“${f.value}”`).join(" and ")}.
+          </details>
+        )}
+        <ol className="fp-steps">
+          {steps.map((f, i) => {
+            const isDone = done.includes(i);
+            return (
+              <li key={`${packet.reported_username} ${f.question}`} className={`fp-step${isDone ? " done" : ""}`}>
+                <span className="fp-num" aria-label={isDone ? "Copied" : `Step ${i + 1}`}>
+                  {isDone ? <Check /> : i + 1}
+                </span>
+                <span className="fp-q">
+                  {f.question}
+                  {!f.required && " (optional)"}
+                </span>
+                <div className="fp-a">
+                  <span className={`fp-value${f.value.includes("\n") ? " clamp" : ""}`}>
+                    {f.type === "select" ? `Choose “${f.value}”` : f.value}
+                  </span>
+                  {f.type !== "select" && (
+                    <CopyButton
+                      text={f.value}
+                      onCopied={() => setCopied((c) => ({ ...c, [packet.reported_username]: [...new Set([...done, i])] }))}
+                    />
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+
+        <section className="fp-section" aria-labelledby="fp-boxes">
+          <h2 className="fp-kicker" id="fp-boxes">Checkboxes</h2>
+          <ul className="fp-boxes">
+            {packet.checkboxes.map((b) => (
+              <li key={b.label} className="fp-box">
+                <span className={`fp-tick${b.check ? " on" : ""}`} role="img" aria-label={b.check ? "Tick" : "Leave unticked"}>
+                  {b.check && <Check />}
+                </span>
+                <span className="fp-box-label">{b.label}</span>
+                {b.why && <span className="hint">{b.why}</span>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      </main>
+
+      <footer className="fp-foot">
+        <span className="fp-progress" role="status">
+          {done.length === copyable ? "All answers copied" : `${done.length} of ${copyable} copied`}
+        </span>
+        {n.form_url && (
+          <a className={`btn ${formOpened ? "btn-outline" : "btn-primary"}`} href={n.form_url} target="_blank" rel="noreferrer noopener">
+            <ExternalLink />
+            {formOpened ? `Reopen ${n.platform}’s form` : `Open ${n.platform}’s form`}
+          </a>
+        )}
+      </footer>
+    </>
+  );
+}
+
+function CopyButton({ text, onCopied }: { text: string; onCopied?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="btn btn-ghost btn-sm"
+      type="button"
+      onClick={async (e) => {
+        // Inside the floating window, only that window's clipboard is allowed: it has the focus.
+        const nav = e.currentTarget.ownerDocument.defaultView?.navigator ?? navigator;
+        await nav.clipboard.writeText(text);
+        setCopied(true);
+        onCopied?.();
+      }}
+    >
+      {copied && <Check />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+// Each new window uses up the click that opened it, so the floating window opens on the first of the two presses
+// and the platform's form on the second. Both must be called during the click.
+function openFloat(): Promise<Window | null> | null {
+  const pip = (window as Window & { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture;
+  if (!pip) return null;
+  return pip.requestWindow({ width: 440, height: 680 }).then(
+    (win) => {
+      win.document.documentElement.className = document.documentElement.className;
+      win.document.body.className = document.body.className;
+      for (const node of document.head.querySelectorAll('link[rel="stylesheet"], style'))
+        win.document.head.append(node.cloneNode(true));
+      win.document.title = "Six Eyes report";
+      floatMessage(win, "Press both buttons and your report appears here. This window stays on top of other windows.");
+      return win;
+    },
+    () => null,
+  );
+}
+
+function floatMessage(win: Window, text: string) {
+  const box = win.document.createElement("div");
+  const kicker = win.document.createElement("span");
+  const p = win.document.createElement("p");
+  box.className = "fp-wait";
+  kicker.className = "fp-kicker";
+  kicker.textContent = "Six Eyes";
+  p.textContent = text;
+  box.append(kicker, p);
+  win.document.body.replaceChildren(box);
+}
+
+// A tab when the floating window has the answers; otherwise a window on the right half, beside the dashboard.
+function openForm(asTab: boolean): Window | null {
+  const half = Math.round(screen.availWidth / 2);
+  const win = asTab
+    ? window.open("", "_blank")
+    : window.open("", "take-it-down", `popup,width=${half},height=${screen.availHeight},left=${half},top=0`);
+  if (!win) return null;
+  win.opener = null;
+  win.document.title = "Preparing your report…";
+  win.document.body.textContent = "Preparing your report…";
+  return win;
+}
+
 // Both statements are required before a case moves on; pressing the second one confirms.
-function Attest({ caseId, copies, onConfirmed }: { caseId: number; copies: number; onConfirmed: (ids: number[]) => void }) {
+function Attest({ caseId, copies, onConfirmed }: { caseId: number; copies: number; onConfirmed: (f: Filing, h: Helper) => void }) {
   const [isMe, setIsMe] = useState(false);
   const [notConsensual, setNotConsensual] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const float = useRef<Promise<Window | null> | null>(null);
+
+  function closeFloat() {
+    float.current?.then((w) => w?.close());
+    float.current = null;
+  }
 
   async function toggle(which: "isMe" | "notConsensual") {
     const next = { isMe, notConsensual, [which]: !(which === "isMe" ? isMe : notConsensual) };
     setIsMe(next.isMe);
     setNotConsensual(next.notConsensual);
     setError("");
-    if (!next.isMe || !next.notConsensual) return;
+    const pressed = Number(next.isMe) + Number(next.notConsensual);
+    if (pressed === 1 && !float.current) {
+      const opening = openFloat();
+      float.current = opening;
+      opening?.then((w) => {
+        if (!w && float.current === opening) float.current = null;
+      });
+    }
+    if (pressed === 0) closeFloat();
+    if (pressed < 2) return;
+    const helper: Helper = { float: float.current, form: openForm(Boolean(float.current)) };
+    float.current = null;
+    helper.float?.then((w) => w && floatMessage(w, "Preparing your report…"));
     setBusy(true);
     try {
       const res = await fetch(`${API}/cases/${caseId}/confirm`, {
@@ -307,8 +659,14 @@ function Attest({ caseId, copies, onConfirmed }: { caseId: number; copies: numbe
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Couldn’t confirm this post.");
-      onConfirmed(data.confirmed);
+      // The server files from the first newly confirmed case, so retries use that one too.
+      onConfirmed(
+        { caseId: data.confirmed[0] ?? caseId, ids: data.confirmed, notice: data.notice, error: data.notice_error },
+        helper,
+      );
     } catch (e) {
+      helper.float?.then((w) => w?.close());
+      helper.form?.close();
       setError(e instanceof TypeError ? "Can't reach the Six Eyes server. Try again." : (e as Error).message);
       setNotConsensual(false);
       setIsMe(false);

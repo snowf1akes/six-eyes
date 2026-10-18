@@ -376,6 +376,261 @@ svg {
 .note p {
   color: var(--ink-2);
 }
+.note-more {
+  grid-column: 2;
+  margin-top: 8px;
+}
+/* Floating report window: sits on top of the platform's form, so it reads at a glance. */
+.float {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  font-size: 0.875rem;
+}
+.fp-wait {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 20rem;
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--ink-2);
+}
+.fp-head,
+.fp-foot {
+  position: sticky;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgb(250 248 245 / 0.92);
+  backdrop-filter: blur(12px) saturate(150%);
+}
+.fp-head {
+  top: 0;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+}
+.fp-foot {
+  bottom: 0;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+}
+.fp-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fp-kicker {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.chip-test {
+  border: 1px solid var(--perforation);
+  color: var(--ink-2);
+}
+.fp-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+.fp-tab.pressed {
+  background: var(--mark);
+  border-color: var(--ink);
+}
+.fp-callout {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+}
+.fp-callout.is-test {
+  box-shadow: inset 3px 0 0 var(--ink);
+}
+.fp-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+.fp-body summary {
+  cursor: pointer;
+}
+.fp-steps,
+.fp-boxes {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fp-steps {
+  gap: 8px;
+}
+.fp-step {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--sheet);
+  box-shadow: var(--shadow-paper);
+}
+.fp-num {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  grid-row: span 2;
+  border-radius: 50%;
+  background: var(--muted);
+  color: var(--ink-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: background-color 150ms ease-out;
+}
+.fp-num svg {
+  width: 14px;
+  height: 14px;
+}
+.fp-step.done .fp-num {
+  background: var(--mark);
+  color: var(--ink);
+}
+.fp-q {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+.fp-a {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.fp-value {
+  min-width: 0;
+  padding-top: 4px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+.fp-value.clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.fp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fp-boxes {
+  gap: 10px;
+}
+.fp-box {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 2px 10px;
+}
+.fp-tick {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  background: var(--sheet);
+}
+.fp-tick.on {
+  border-color: var(--ink);
+  background: var(--mark);
+}
+.fp-tick svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.5;
+}
+.fp-box-label {
+  font-weight: 500;
+}
+.fp-box .hint {
+  grid-column: 2;
+  font-size: 0.8125rem;
+}
+.fp-progress {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.note-more summary,
+.form-guide summary {
+  cursor: pointer;
+  color: var(--ink-2);
+}
+.form-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--sheet);
+}
+.form-guide-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.form-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 1.25rem;
+}
+.form-steps li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.form-q {
+  color: var(--ink-2);
+}
+.form-a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.btn-sm {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 0.8125rem;
+}
+.notice-text {
+  margin-top: 8px;
+  padding: 12px;
+  max-height: 24rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
 
 /* State chip: a label and a drawn mark, never colour alone. */
 .chip {

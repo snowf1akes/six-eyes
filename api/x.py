@@ -52,29 +52,24 @@ class Post(BaseModel):
     media: list[Media]
 
 
-def query(name: str, handles: list[str]) -> str:
-    terms = [f'"{n}"'] if (n := name.replace('"', "").strip()) else []
-    for h in dict.fromkeys(h.lstrip("@").lower() for h in handles):
-        if HANDLE.fullmatch(h):
-            terms += [f"@{h}", f"to:{h}"]
-    if not terms:
-        raise ValueError("Need a name or at least one valid X handle to search.")
-    return _media_query(terms)
+def query(name: str, handles: list[str], terms: list[str] | None = None) -> str:
+    """("name" OR @handle OR to:handle), and with terms also (one of the terms)."""
+    return _media_query(_user_group(name, handles), *([_term_group(terms)] if terms else []))
 
 
 def keyword_query(terms: list[str]) -> str:
-    phrases = dict.fromkeys(t.replace('"', "").strip().lower() for t in terms)
-    if not (quoted := [f'"{p}"' for p in phrases if p]):
-        raise ValueError("Need at least one search term.")
-    return _media_query(quoted)
+    return _media_query(_term_group(terms))
 
 
-def search(name: str, handles: list[str], limit: int = 100, since_id: str | None = None) -> list[Post]:
+def search(name: str, handles: list[str], limit: int = 100, since_id: str | None = None,
+           terms: list[str] | None = None) -> list[Post]:
     """Recent (last 7 days) posts with images or videos that name or mention the user.
 
+    With terms, only posts that also use one of them: for a common or famous name, the plain
+    search fills up with unrelated posts and buries the few that say "deepfake".
     Pass the newest post id from the last scan as since_id so X doesn't bill for posts already seen.
     """
-    return _search(query(name, handles), limit, since_id)
+    return _search(query(name, handles, terms), limit, since_id)
 
 
 def sweep(terms: list[str], limit: int = 500, since_id: str | None = None) -> list[Post]:
@@ -87,8 +82,25 @@ def sweep(terms: list[str], limit: int = 500, since_id: str | None = None) -> li
     return _search(keyword_query(terms), limit, since_id)
 
 
-def _media_query(terms: list[str]) -> str:
-    q = f"({' OR '.join(terms)}) {MEDIA_ONLY}"
+def _user_group(name: str, handles: list[str]) -> list[str]:
+    group = [f'"{n}"'] if (n := name.replace('"', "").strip()) else []
+    for h in dict.fromkeys(h.lstrip("@").lower() for h in handles):
+        if HANDLE.fullmatch(h):
+            group += [f"@{h}", f"to:{h}"]
+    if not group:
+        raise ValueError("Need a name or at least one valid X handle to search.")
+    return group
+
+
+def _term_group(terms: list[str]) -> list[str]:
+    phrases = dict.fromkeys(t.replace('"', "").strip().lower() for t in terms)
+    if not (quoted := [f'"{p}"' for p in phrases if p]):
+        raise ValueError("Need at least one search term.")
+    return quoted
+
+
+def _media_query(*groups: list[str]) -> str:
+    q = " ".join(f"({' OR '.join(g)})" for g in groups) + f" {MEDIA_ONLY}"
     if len(q) > MAX_QUERY:
         raise ValueError(f"X search query is {len(q)} characters; the limit is {MAX_QUERY}.")
     return q

@@ -1,0 +1,108 @@
+{
+  "_note": "Platform -> official TAKE IT DOWN / NCII removal channel. Order = priority. 'verified': true means the channel was confirmed from the platform's own page; false means confirm before relying on it. Values in fields[].value are placeholders from api/templates/notice.md or literal answers. 'preset': true means the form link already picks that answer.",
+  "platforms": [
+    {
+      "id": "x",
+      "name": "X",
+      "method": "web_form",
+      "url": "https://help.x.com/en/forms/safety-and-sensitive-content/take-it-down/authorized-rep",
+      "in_app_path": "Post > ... menu > Private or Non-Consensual Content > Report content under the US Take It Down Act",
+      "policy_url": "https://help.x.com/en/rules-and-policies/us-tida",
+      "login_required": false,
+      "verified": true,
+      "fields": [
+        {"question": "What issue are you having?", "required": true, "type": "select", "preset": true,
+         "value": "I'd like to submit a US Take It Down Act Report"},
+        {"question": "Report a sexual, nude, or intimate photo/video of:", "required": true, "type": "select", "preset": true,
+         "value": "Someone else without permission on which I'm the authorized representative"},
+        {"question": "Your email address", "required": true, "type": "text",
+         "value": "{contact_email}"},
+        {"question": "Signature", "required": true, "type": "text",
+         "value": "{signer_name}, Authorized representative of {user_name}, authorized on {authorization_date}"},
+        {"question": "Username of the account you are reporting", "required": true, "type": "text",
+         "value": "{reported_username}"},
+        {"question": "Please share the content that might be violating our rules", "required": false, "type": "text",
+         "value": "{content_urls}"},
+        {"question": "Please provide more details about what's happening", "required": false, "type": "textarea",
+         "value": "<rendered api/templates/details.md>"}
+      ],
+      "checkboxes": [
+        {"label": "It's okay to include the content being reported in updates sent to me in the future.",
+         "check": false,
+         "why": "Leave unticked: we never want the intimate media sent to our inbox. Raw media stays out of our systems."},
+        {"label": "I have a good faith belief that the intimate visual depiction(s) identified above were published without my consent (or without the consent of the person I am authorized to represent).",
+         "check": true,
+         "why": "Statutory statement (Act 3(a)(1)(B)(iii)). Tick only after the user clicked 'This is me' and 'Not consensual'."},
+        {"label": "By checking this box, I confirm that the information provided in this form is accurate.",
+         "check": true,
+         "why": "Accuracy attestation by the signer."}
+      ]
+    },
+    {
+      "id": "instagram",
+      "name": "Instagram (Meta)",
+      "method": "web_form",
+      "url": "https://help.instagram.com/contact/1444860770142447",
+      "verified": true,
+      "notes": "Instagram's NCII report form. Asks if the person was under 18 (routes to NCMEC Take It Down) and points adults to StopNCII."
+    },
+    {
+      "id": "facebook",
+      "name": "Facebook (Meta)",
+      "method": "in_app",
+      "url": null,
+      "in_app_path": "Post > ... > Report > Nudity or sexual activity > Sharing private images",
+      "verified": false,
+      "notes": "Meta has not published a separate TAKE IT DOWN form we could confirm. Use the in-app report; confirm the direct form link."
+    },
+    {
+      "id": "tiktok",
+      "name": "TikTok",
+      "method": "in_app",
+      "url": null,
+      "in_app_path": "Video > Share arrow > Report > Sexual content > link to report non-consensual intimate imagery",
+      "verified": false,
+      "notes": "In-app path from news coverage; confirm the direct web form link."
+    },
+    {
+      "id": "reddit",
+      "name": "Reddit",
+      "method": "web_form",
+      "url": null,
+      "in_app_path": "Post > ... > Report > Non-consensual intimate media",
+      "verified": false,
+      "notes": "Direct TAKE IT DOWN form not confirmed yet; check Reddit Help Center."
+    },
+    {
+      "id": "snapchat",
+      "name": "Snapchat",
+      "method": "in_app",
+      "url": null,
+      "in_app_path": "Press and hold the Snap or Story > Report > nudity / sexual content of me (NCII category)",
+      "policy_url": "https://values.snap.com/news/take-it-down-act",
+      "verified": false,
+      "notes": "Snap says reporting is in-app with dedicated NCII categories; confirm any web form."
+    },
+    {
+      "id": "bluesky",
+      "name": "Bluesky",
+      "method": "web_form",
+      "url": "https://bsky.social/about/support/tida-notice",
+      "policy_url": "https://bsky.social/about/support/tida-info",
+      "verified": true,
+      "notes": "TAKE IT DOWN notice form; takes the post or account URL and covers AI-generated or altered content."
+    },
+    {
+      "id": "stopncii",
+      "name": "StopNCII.org",
+      "method": "hash_submission",
+      "url": "https://stopncii.org",
+      "verified": true,
+      "notes": "Not a takedown notice. The person makes a hash of the image on their own device; partner platforms block matching uploads. Adults only, and the person must submit it themselves (no representatives), so Six Eyes can only suggest it to the user."
+    }
+  ],
+  "escalation": {
+    "ftc": "https://takeitdown.ftc.gov",
+    "minors": "https://takeitdown.ncmec.org"
+  }
+}

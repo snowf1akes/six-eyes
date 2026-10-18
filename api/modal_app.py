@@ -37,8 +37,11 @@ image = (
     # Bake the face, DINOv3, NSFW, VAE and LPIPS weights into the image; the token is only needed for this step.
     .run_function(fetch_models, secrets=[modal.Secret.from_name("huggingface")])
     .env({"DB_PATH": "/data/six_eyes.db", "MODELS_DIR": "/root/models", "HF_HUB_OFFLINE": "1"})
-    .add_local_python_source("main", "x", "signals", "analyze", "face", "crops", "recon")
+    .add_local_python_source("main", "x", "signals", "analyze", "face", "crops", "recon", "channels")
     .add_local_file(Path(__file__).with_name("data") / "keywords.json", "/root/data/keywords.json")
+    .add_local_file(Path(__file__).with_name("data") / "channels.json", "/root/data/channels.json")
+    .add_local_file(Path(__file__).with_name("templates") / "notice.md", "/root/templates/notice.md")
+    .add_local_file(Path(__file__).with_name("templates") / "details.md", "/root/templates/details.md")
     .add_local_file(MODELS / "dinov3_binary.joblib", "/root/models/dinov3_binary.joblib")
     .add_local_file(MODELS / "dinov3_multi.joblib", "/root/models/dinov3_multi.joblib")
 )
