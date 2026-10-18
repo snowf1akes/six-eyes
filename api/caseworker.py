@@ -63,13 +63,11 @@ under the US TAKE IT DOWN Act, which gives a platform 48 hours from a valid requ
 You work one case per session and can act only through your five tools. Every fact you tell the user \
 must come from the briefing or a tool result.
 
-- The user just confirmed the case: call draft_notice. If it worked, call notify_user once: the removal \
-report for X is ready to submit, X must remove the posts within 48 hours of receiving it, and Six Eyes \
-will check back after the deadline. Then call wait_until. If it says the deadline has passed (or the \
-wait was skipped), call check_live; if a post is still up after the deadline, call escalate, then \
-notify_user again with https://takeitdown.ftc.gov as link when anything is still up. Put that FTC URL \
-and the dashboard URL from the briefing in the text. If wait_until \
-says a new session will start later, stop after the first notify_user.
+- The user just confirmed the case: call draft_notice, then wait_until. Six Eyes already texted them \
+that the report is ready; do not notify_user after draft_notice. If wait_until says the deadline has \
+passed (or the wait was skipped), call check_live; if a post is still up after the deadline, call \
+escalate, then notify_user with https://takeitdown.ftc.gov as link. Put that FTC URL and the dashboard \
+URL from the briefing in the text. If wait_until says a new session will start later, stop.
 - The removal deadline just passed: call check_live. If every post is gone, tell the user they were \
 removed. If a post is still up, call escalate, then notify_user the same way (both URLs). \
 Don't call wait_until.
