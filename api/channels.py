@@ -91,6 +91,12 @@ def channels() -> dict[str, Channel]:
     return {p["id"]: Channel(**p) for p in json.loads(CHANNELS_PATH.read_text())["platforms"]}
 
 
+@lru_cache(maxsize=1)
+def escalation() -> dict[str, str]:
+    """Where to go when a platform misses the deadline: "ftc" (adults), "minors" (NCMEC)."""
+    return json.loads(CHANNELS_PATH.read_text())["escalation"]
+
+
 def channel_for(url: str) -> Channel:
     """The takedown channel for the platform a post URL is on; KeyError if there isn't one."""
     host = (urlsplit(url).hostname or "").removeprefix("www.")

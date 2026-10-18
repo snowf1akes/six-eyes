@@ -3,7 +3,10 @@
 Deploy from the repo root, on a machine that has the trained heads in data/models (ml/heads.py):
     .venv/Scripts/modal deploy api/modal_app.py
 URL: https://<workspace>--six-eyes-api-web.modal.run
-Needs two Modal secrets: six-eyes-x (X_BEARER_TOKEN) and huggingface (HF_TOKEN, for the gated DINOv3).
+Needs three Modal secrets: six-eyes-x (X_BEARER_TOKEN, plus PHOTON_API_KEY, PHOTON_PROJECT_ID and
+PHOTON_AGENT_USER_ID for texts), huggingface (HF_TOKEN, for the gated DINOv3) and factory
+(FACTORY_API_KEY, for the case worker). Opening the dashboard rechecks a user's cases past
+their 48-hour removal deadline; hourly, deadline_sweep wakes the API to recheck everyone's.
 """
 from pathlib import Path
 
@@ -32,16 +35,20 @@ def fetch_models():
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("libgl1", "libglib2.0-0")  # OpenCV's runtime libraries
+    .apt_install("libgl1", "libglib2.0-0", "curl")  # OpenCV's runtime libraries; curl for the droid installer
+    .run_commands("curl -fsSL https://app.factory.ai/cli | sh")  # the droid CLI, for the case worker
     .pip_install_from_requirements(str(Path(__file__).with_name("requirements.txt")))
     # Bake the face, DINOv3, NSFW, VAE and LPIPS weights into the image; the token is only needed for this step.
     .run_function(fetch_models, secrets=[modal.Secret.from_name("huggingface")])
-    .env({"DB_PATH": "/data/six_eyes.db", "MODELS_DIR": "/root/models", "HF_HUB_OFFLINE": "1"})
-    .add_local_python_source("main", "x", "signals", "analyze", "face", "crops", "recon", "channels")
+    .env({"DB_PATH": "/data/six_eyes.db", "MODELS_DIR": "/root/models", "HF_HUB_OFFLINE": "1",
+          "DROID_PATH": "/root/.local/bin/droid"})
+    .add_local_python_source("main", "x", "signals", "analyze", "face", "crops", "recon", "channels",
+                            "caseworker", "photon")
     .add_local_file(Path(__file__).with_name("data") / "keywords.json", "/root/data/keywords.json")
     .add_local_file(Path(__file__).with_name("data") / "channels.json", "/root/data/channels.json")
     .add_local_file(Path(__file__).with_name("templates") / "notice.md", "/root/templates/notice.md")
     .add_local_file(Path(__file__).with_name("templates") / "details.md", "/root/templates/details.md")
+    .add_local_file(Path(__file__).with_name("templates") / "ftc_packet.md", "/root/templates/ftc_packet.md")
     .add_local_file(MODELS / "dinov3_binary.joblib", "/root/models/dinov3_binary.joblib")
     .add_local_file(MODELS / "dinov3_multi.joblib", "/root/models/dinov3_multi.joblib")
 )
@@ -49,7 +56,8 @@ image = (
 
 # ponytail: one container is the only SQLite writer; Modal commits the Volume in the
 # background every few seconds and on shutdown. Move to Postgres before scaling out.
-@app.function(image=image, volumes={"/data": db_volume}, secrets=[modal.Secret.from_name("six-eyes-x")],
+@app.function(image=image, volumes={"/data": db_volume},
+              secrets=[modal.Secret.from_name("six-eyes-x"), modal.Secret.from_name("factory")],
               cpu=2, memory=8192, max_containers=1, scaledown_window=600, timeout=600)
 @modal.concurrent(max_inputs=20)
 @modal.asgi_app()
@@ -64,3 +72,14 @@ def web():
     nsfw_model()
     recon.models()
     return api
+
+
+# Calls the web app rather than opening the database, so the web container stays the only SQLite writer.
+@app.function(image=modal.Image.debian_slim(python_version="3.12").pip_install("httpx"),
+              schedule=modal.Period(hours=1))
+def deadline_sweep():
+    import httpx
+
+    r = httpx.post(web.get_web_url() + "/recheck", timeout=300)
+    r.raise_for_status()
+    print(r.json())

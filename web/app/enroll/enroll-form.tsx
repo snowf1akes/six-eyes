@@ -126,7 +126,7 @@ export function EnrollForm({ consent }: { consent: ReactNode }) {
               Phone <span className="optional">(optional)</span>
             </label>
             <input className="input" id="phone" name="phone" type="tel" autoComplete="tel" aria-describedby="phone-hint" />
-            <p className="hint" id="phone-hint">For a text each time a case changes.</p>
+            <p className="hint" id="phone-hint">We'll text you when a report is filed, and if X hasn't taken the posts down in 48 hours.</p>
           </div>
         </div>
       </section>
